@@ -1,0 +1,332 @@
+.till-quick-add-wide {
+    max-width: 100%;
+    margin: 24px 0 0 0;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(60,72,88,0.04);
+    padding: 18px 24px;
+}
+.till-quick-add-wide .quick-add-grid {
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    width: 100%;
+}
+
+.keypad-container {
+    max-width: 320px;
+    margin: 10px auto;
+    padding: 12px;
+    border-radius: 8px;
+    background-color: #e9eef2;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1), inset 0 2px 4px rgba(255,255,255,0.5);
+}
+
+.keypad-display {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 12px;
+    background-color: #D1DDE9;
+    border: 1px solid #b8c5d3;
+    border-radius: 4px;
+    text-align: right;
+    font-size: 1.8em;
+    font-family: 'Courier New', Courier, monospace;
+    box-sizing: border-box;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+    color: #25214E;
+}
+
+.keypad {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+}
+
+.keypad-btn {
+    padding: 15px 10px;
+    font-size: 1.4em;
+    border-radius: 4px;
+    border: 1px solid #b8c5d3;
+    background-color: #fcfdff;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: 0 2px 3px rgba(0,0,0,0.1);
+    /* Reset some generic button styles */
+    min-width: unset;
+    color: #25214E;
+}
+
+.keypad-btn:hover {
+    border-color: #9fadc0;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px rgba(0,0,0,0.15);
+}
+
+.keypad-btn:active {
+    transform: translateY(0);
+    background-color: #e9eef2;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.keypad-btn-special {
+    background-color: #e4e9ed;
+    font-size: 1.1em;
+}
+
+.keypad-btn-clear {
+    background-color: #e57373; /* Light red */
+    color: #25214E;
+}
+
+.keypad-btn-enter {
+    background-color: #4CAF50; /* Green from existing styles */
+    color: #25214E;
+}
+
+.keypad-btn-wide {
+    grid-column: span 2;
+}
+
+.payment-methods {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.payment-btn {
+    padding: 12px;
+    font-size: 1.2em;
+    font-weight: 500;
+    color: #25214E;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: transform 0.2s;
+    min-width: unset;
+}
+
+.till-wrapper {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 24px;
+    width: 75%;
+    /* align-items: stretch; */
+    justify-content: flex-start;
+}
+.till-left-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    flex-shrink: 0;
+    width: 320px; /* Set fixed width */
+    height: 470px; /* Set fixed height for both keypad and receipt */
+}
+
+.receipt-container {
+    height: 470px;
+    display: flex;
+    flex-direction: column;
+    width: 525px;
+    padding: 15px;
+    background-color: #4a6788;
+    min-height: 400px;
+    margin-left: 0;
+    /* border: 1px solid #ccc; */
+    border-radius: 8px;
+    overflow-y: auto;
+
+}
+
+@media (max-width: 900px) {
+    .till-wrapper {
+        flex-direction: column;
+        gap: 12px;
+    }
+    .till-left-panel, .receipt-container {
+        min-width: 0;
+        max-width: 100%;
+        height: auto;
+    }
+}
+
+.receipt-container h4 {
+    margin-top: 0;
+    border-bottom: 2px solid #eee;
+    padding-bottom: 10px;
+}
+
+.receipt-items-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    flex-grow: 1;
+    overflow-y: auto;
+    max-height: 220px;
+}
+
+.receipt-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 4px;
+    align-items: center;
+    border-bottom: 1px dashed #ddd;
+    font-size: 14px;
+}
+
+.receipt-item-desc {
+    flex-grow: 1;
+    margin-right: 15px;
+    word-break: break-word;
+}
+
+.receipt-item.is-refund .receipt-item-desc,
+.receipt-item.is-refund .receipt-item-price {
+    color: #ffcdd2; /* Light red text to indicate refund */
+    text-decoration: line-through;
+}
+
+.receipt-item-refund-btn {
+    background-color: #f0ad4e; /* Orange, distinct from red remove button */
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+    text-align: center;
+    cursor: pointer;
+    font-size: 16px; /* Larger symbol */
+    font-weight: bold;
+    margin: 0 5px; /* Space it out */
+    padding: 0;
+    flex-shrink: 0;
+    transition: background-color 0.2s, transform 0.2s;
+    min-width: unset;
+}
+
+.receipt-item-refund-btn:hover {
+    background-color: #ec971f; /* Darker orange */
+    transform: scale(1.1);
+}
+
+.receipt-item-price {
+    font-weight: bold;
+    white-space: nowrap;
+    color: White;
+}
+
+.receipt-item-remove-btn {
+    background-color: #e74c3c; /* A slightly softer red */
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+    text-align: center;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: bold;
+    margin: 0 10px;
+    padding: 0;
+    flex-shrink: 0;
+    transition: background-color 0.2s, transform 0.2s;
+    /* Reset generic button styles */
+    min-width: unset;
+}
+
+.payment-btn:hover {
+    transform: translateY(-2px);
+}
+
+.payment-btn-cash {
+    background-color: #8abfeb; /* Blue */
+}
+
+.payment-btn-card {
+    background-color: #8abfeb; /* Deep Purple */
+}
+
+.receipt-item-remove-btn:hover {
+    background-color: #c0392b; /* Darker red */
+    transform: scale(1.1);
+}
+
+.receipt-tax {
+    display: flex;
+    justify-content: space-between;
+    font-size: 1.1em;
+    color: White;
+    margin-bottom: 8px;
+}
+
+.receipt-subtotal {
+    display: flex;
+    justify-content: space-between;
+    font-size: 1em;
+    color: #e0e0e0;
+    margin-bottom: 8px;
+}
+
+.receipt-total {
+    display: flex;
+    justify-content: space-between;
+    font-size: 1.5em;
+    font-weight: bold;
+    color: White;
+    padding-top: 10px;
+    border-top: 2px solid #fff;
+}
+
+.receipt-summary {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 3px double #ccc;
+}
+
+.quick-add-container {
+    margin: 0px auto 0; /* Add some space above and center the container */
+    padding: 12px;
+    border-radius: 8px;
+    box-sizing: border-box;
+    background-color: #4a6788;
+    /* margin-top: 52px; */
+    flex: 1;
+    height: 470px;
+    text-align: center;
+}
+
+.quick-add-container h4 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    text-align: center;
+    color: White;
+}
+
+.quick-add-grid {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap; /* Allows items to wrap on smaller screens */
+    gap: 8px;
+}
+
+.quick-add-btn {
+    background-color: #95BEE7;
+    color: #25214E;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    min-width: 125px;
+    margin-right: 5px;
+    width: 55px;
+}
+
+.quick-add-btn:hover {
+    background-color: #1976D2;
+}

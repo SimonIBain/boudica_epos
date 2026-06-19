@@ -1,0 +1,432 @@
+This document outlines the API calls and expected parameters for the application, based on the main entry point. All calls are expected to be part of a URL query string.
+
+---
+
+### Command: `addproduct`
+Adds a new product to the system.
+
+**Parameters:**
+*   `command=addproduct`
+*   `username=<email>`
+*   `password=<password>`
+*   `supplier=<supplier_name>`
+*   `description=<product_description>`
+*   `price=<retail_price>`
+*   `barcode=<barcode_number>` (Optional. If `createbarcode=true` and this is empty, a new EAN-13 barcode will be generated.)
+*   `createbarcode=<true|false>` (Optional. Defaults to `true`.)
+
+---
+
+### Command: `updatestock`
+Updates the stock level for a given product.
+
+**Parameters:**
+*   `command=updatestock`
+*   `username=<email>`
+*   `password=<password>`
+*   `barcode=<barcode_number>`
+*   `quantity=<number>` (Can be a negative number to subtract from stock.)
+
+---
+
+### Command: `addsupplier`
+Adds a new supplier to the system.
+
+**Parameters:**
+*   `command=addsupplier`
+*   `username=<email>`
+*   `password=<password>`
+*   `supplier=<supplier_name>`
+*   `telephone=<phone_number>`
+*   `address=<full_address>`
+*   `postcode=<postcode>`
+*   `supplier_email=<email_address>`
+
+---
+
+### Command: `getsupplierlist`
+Retrieves a list of all suppliers.
+
+**Parameters:**
+*   `command=getsupplierlist`
+*   `username=<email>`
+*   `password=<password>`
+
+---
+
+### Command: `setfloat`
+Sets the initial cash float for the till at the start of the day.
+
+**Parameters:**
+*   `command=setfloat`
+*   `username=<email>`
+*   `password=<password>`
+*   `float=<float_amount>`
+
+---
+
+### Command: `pricelookup`
+Looks up the price of a product by its barcode.
+
+**Parameters:**
+*   `command=pricelookup`
+*   `username=<email>`
+*   `password=<password>`
+*   `barcode=<barcode_number>`
+
+---
+
+### Command: `getdetails`
+Retrieves detailed information for a product using its barcode or a search term.
+
+**Parameters:**
+*   `command=getdetails`
+*   `username=<email>`
+*   `password=<password>`
+*   `barcode=<barcode_or_search_term>`
+
+---
+
+### Command: `quantitylookup`
+Looks up the current stock quantity for a product.
+
+**Parameters:**
+*   `command=quantitylookup`
+*   `username=<email>`
+*   `password=<password>`
+*   `barcode=<barcode_number>`
+
+---
+
+### Command: `sellitem`
+Records the sale of an item.
+
+**Parameters:**
+*   `command=sellitem`
+*   `username=<email>`
+*   `password=<password>`
+*   `barcode=<barcode_number>` (If empty, defaults to "cash sale" for miscellaneous items.)
+*   `price=<item_price>`
+*   `quantity=<number>`
+*   `type=<cash|card|undisclosed>` (Optional. Defaults to "undisclosed".)
+
+---
+
+### Command: `cashup`
+Calculates the end-of-day totals and finalizes the sales period.
+
+**Parameters:**
+*   `command=cashup`
+*   `username=<email>`
+*   `password=<password>`
+
+---
+
+### Command: `getdashboard`
+Retrieves data for the main dashboard, including today's sales and weekly trends.
+
+**Parameters:**
+*   `command=getdashboard`
+*   `username=<email>`
+*   `password=<password>`
+
+---
+
+### Command: `stocktake`
+Records a single item scan during a stock-taking process.
+
+**Parameters:**
+*   `command=stocktake`
+*   `username=<email>`
+*   `password=<password>`
+*   `barcode=<barcode_number>`
+
+---
+
+### Command: `completestocktake`
+Finalizes the stock-take process and reports discrepancies between counted and recorded stock.
+
+**Parameters:**
+*   `command=completestocktake`
+*   `username=<email>`
+*   `password=<password>`
+
+---
+
+### Command: `addinvoice`
+Adds a supplier invoice to the system.
+
+**Parameters:**
+*   `command=addinvoice`
+*   `username=<email>`
+*   `password=<password>`
+*   `supplier=<supplier_name>`
+*   `details=<invoice_details>`
+*   `amount=<total_amount>`
+*   `invoicenumber=<invoice_number>`
+*   `paid=<true|false>`
+
+---
+
+### Command: `adduser`
+Creates a new customer in the system.
+
+**Parameters:**
+*   `command=adduser`
+*   `username=<admin_email>`
+*   `password=<admin_password>`
+*   `newuser=<new_customer_email>`
+*   `newpassword=<new_customer_password>`
+*   `address=<address>`
+*   `telephone=<phone_number>`
+*   `zipcode=<zip_code>`
+*   `firstname=<first_name>`
+*   `lastname=<last_name>`
+
+---
+
+### Command: `getadvice`
+Gets crafting advice from a generative AI model.
+
+**Parameters:**
+*   `command=getadvice`
+*   `username=<email>`
+*   `password=<password>`
+*   `prompt=<question_for_ai>`
+
+---
+
+### Command: `salesreport`
+Generates a sales report for a given date range.
+
+**Parameters:**
+*   `command=salesreport`
+*   `username=<email>`
+*   `password=<password>`
+*   `start_date=<YYYY-MM-DD>`
+*   `end_date=<YYYY-MM-DD>`
+
+---
+
+### Command: `revenuereport`
+Generates a revenue analysis report for a given date range.
+
+**Parameters:**
+*   `command=revenuereport`
+*   `username=<email>`
+*   `password=<password>`
+*   `start_date=<YYYY-MM-DD>`
+*   `end_date=<YYYY-MM-DD>`
+
+---
+
+### Command: `inventoryreport`
+Generates an inventory stock valuation report.
+
+**Parameters:**
+*   `command=inventoryreport`
+*   `username=<email>`
+*   `password=<password>`
+
+---
+
+### Command: `taxsummary`
+Generates a tax/VAT summary report for a given date range.
+
+**Parameters:**
+*   `command=taxsummary`
+*   `username=<email>`
+*   `password=<password>`
+*   `start_date=<YYYY-MM-DD>`
+*   `end_date=<YYYY-MM-DD>`
+
+---
+
+### Command: `webstoreorder`
+Records an order placed through the web store.
+
+**Parameters:**
+*   `command=webstoreorder`
+*   `username=<email>`
+*   `password=<password>`
+*   `order_id=<order_identifier>`
+*   `customer_email=<customer_email>`
+*   `items=<JSON_array_of_items>`
+*   `total_value=<order_total>`
+*   `payment_method=<payment_type>`
+
+---
+
+### Command: `orderhistory`
+Retrieves order history for a customer.
+
+**Parameters:**
+*   `command=orderhistory`
+*   `username=<email>`
+*   `password=<password>`
+*   `email=<customer_email>`
+
+---
+
+### Command: `getreceipt`
+Retrieves receipt details for an order.
+
+**Parameters:**
+*   `command=getreceipt`
+*   `username=<email>`
+*   `password=<password>`
+*   `order_id=<order_identifier>`
+
+---
+
+### Command: `validatecart`
+Validates cart items against current inventory levels.
+
+**Parameters:**
+*   `command=validatecart`
+*   `username=<email>`
+*   `password=<password>`
+*   `items=<JSON_array_of_items>`
+
+---
+
+### Command: `initiate_payment` (NEW - June 2026)
+Creates a Stripe PaymentIntent for processing payments.
+
+**Parameters:**
+*   `command=initiate_payment`
+*   `username=<email>`
+*   `password=<password>`
+*   `order_id=<order_identifier>`
+*   `total=<amount_in_GBP>`
+*   `type=<web_order|till_sale>`
+
+**Response:**
+Returns JSON with:
+*   `id` - PaymentIntent ID
+*   `client_secret` - Client secret for Stripe
+*   `amount` - Amount in pence
+*   `currency` - Currency code (gbp)
+*   `status` - Payment status
+
+---
+
+### Command: `confirm_payment` (NEW - June 2026)
+Confirms a payment and records it in the system.
+
+**Parameters:**
+*   `command=confirm_payment`
+*   `username=<email>`
+*   `password=<password>`
+*   `payment_intent_id=<pi_...>`
+*   `order_id=<order_identifier>`
+
+**Response:**
+Returns JSON with:
+*   `success` - Boolean confirmation
+*   `status` - Payment status (succeeded|failed|pending)
+
+---
+
+### Command: `till_card_sale` (NEW - June 2026)
+Processes a card sale directly from the till.
+
+**Parameters:**
+*   `command=till_card_sale`
+*   `username=<operator_email>`
+*   `password=<password>`
+*   `total=<amount_in_GBP>`
+*   `operator_id=<operator_email>`
+*   `items=<JSON_array_of_items>` (Optional)
+
+**Response:**
+Returns JSON with:
+*   `success` - Boolean confirmation
+*   `till_transaction_id` - Till transaction ID
+*   `payment_intent_id` - Stripe PaymentIntent ID
+
+---
+
+### Command: `process_refund` (NEW - June 2026)
+Processes a refund for a previous payment.
+
+**Parameters:**
+*   `command=process_refund`
+*   `username=<email>`
+*   `password=<password>`
+*   `payment_intent_id=<pi_...>`
+*   `reason=<requested_by_customer|duplicate|fraudulent>`
+
+**Response:**
+Returns JSON with:
+*   `id` - Refund ID
+*   `status` - Refund status (succeeded|failed)
+*   `amount` - Refund amount in pence
+
+---
+
+### Command: `predict_daily_sales` (NEW - June 2026 - Boudica AI Forecasting)
+Forecasts today's sales based on last 10 same days of week using Boudica AI.
+
+**Parameters:**
+*   `command=predict_daily_sales`
+*   `username=<email>`
+*   `password=<password>`
+
+**Response:**
+Returns JSON with:
+*   `daily_sales_data` - Historical sales data
+*   `boudica_forecast` - AI-generated forecast with predicted_sales, confidence_level, explanation
+
+---
+
+### Command: `predict_weekly_sales` (NEW - June 2026 - Boudica AI Forecasting)
+Forecasts this week's sales based on last 10 same weeks using Boudica AI.
+
+**Parameters:**
+*   `command=predict_weekly_sales`
+*   `username=<email>`
+*   `password=<password>`
+
+**Response:**
+Returns JSON with:
+*   `weekly_sales_data` - Historical sales data
+*   `boudica_forecast` - AI-generated forecast with predicted_sales, confidence_level, trend, explanation
+
+---
+
+### Command: `predict_monthly_sales` (NEW - June 2026 - Boudica AI Forecasting)
+Forecasts this month's sales based on last 10 same months with seasonal analysis using Boudica AI.
+
+**Parameters:**
+*   `command=predict_monthly_sales`
+*   `username=<email>`
+*   `password=<password>`
+
+**Response:**
+Returns JSON with:
+*   `monthly_sales_data` - Historical sales data
+*   `boudica_forecast` - AI-generated forecast with predicted_sales, confidence_level, seasonal_trend, explanation
+
+---
+
+### Command: `predict_reorder_date` (NEW - June 2026 - Boudica AI Forecasting)
+Predicts when a product should be reordered based on sales velocity and current stock using Boudica AI.
+
+**Parameters:**
+*   `command=predict_reorder_date`
+*   `username=<email>`
+*   `password=<password>`
+*   `barcode=<barcode_number>`
+
+**Response:**
+Returns JSON with:
+*   `item_data` - Current product and stock information
+*   `reorder_prediction` - AI-generated prediction with:
+    - `days_until_reorder` - Days until stock runs out
+    - `recommended_quantity` - Recommended reorder quantity
+    - `priority` - Priority level (urgent|normal|low)
+    - `explanation` - Reasoning behind the prediction
+
+---
+
