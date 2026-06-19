@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <!-- Prevent Caching -->
+        <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+        <meta http-equiv="Pragma" content="no-cache" />
+        <meta http-equiv="Expires" content="0" />
+        <!-- End Prevent Caching -->
+        <title>Boudica POS - The Curiosity Cabins</title>
+        <link rel="icon" type="image/x-icon" href="assets/dropblock.ico"> 
+        <link rel="stylesheet" href="styles/modern.css">    
+        <link rel="stylesheet" href="styles/toast.css">        
+        <!-- Star Printer -->
+        <script type='text/javascript' src='scripts/star/StarWebPrintBuilder.js'></script>
+        <script type='text/javascript' src='scripts/star/StarWebPrintTrader.js'></script>
+        <!-- END -->         
+        <script defer src="scripts/toast.js"></script>  
+        <script defer src="scripts/application.js"></script> 
+        <script defer src="scripts/login.js"></script> 
+        <script defer src="scripts/tabs.js"></script>
+        <script defer src="scripts/printer.js"></script>
+        <script defer src="scripts/till.js"></script>
+        <script defer src="scripts/keypad.js"></script>
+        <script defer src="scripts/eod.js"></script>
+        <script defer src="scripts/special_orders.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script defer src="scripts/product_lookup.js"></script>    
+        <script defer src="scripts/add_stock_item.js"></script>
+        <script defer src="scripts/dashboard.js"></script>
+        <script defer src="scripts/show_products.js"></script>
+        <script defer src="scripts/stock_take.js"></script>
+        <script defer src="scripts/stock_in.js"></script>
+        <script defer src="scripts/invoice_in.js"></script>
+        <script defer src="scripts/reports.js"></script>
+        <script defer src="scripts/order-history.js"></script>
+        <script defer src="scripts/forecasting.js"></script>
+        <!-- Stripe Payment Processing -->
+        <script src="https://js.stripe.com/v3/"></script>
+        <script defer src="scripts/till-card-payment.js"></script>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">           
+        <script>
+            function openTab(evt, tabName) {
+                var i, tabcontent, tabbuttons;
+                tabcontent = document.getElementsByClassName("tab-content");
+                for (i = 0; i < tabcontent.length; i++) tabcontent[i].style.display = "none";
+                tabbuttons = document.getElementsByClassName("tab-button");
+                for (i = 0; i < tabbuttons.length; i++) tabbuttons[i].className = tabbuttons[i].className.replace(" active", "");
+                document.getElementById(tabName).style.display = "block";
+                evt.currentTarget.className += " active";
+            }
+        </script>
+    </head>
+    <body>
+        <div class="header-container">
+            <div class="header-left">
+                <img src="assets/omniindex.png" alt="Boudica AI POS" class="header-logo">
+                <div class="header-title" id="user_name">AI-EPOS Till / Curiosity Cabin</div>
+            </div>
+            <div class="header-right">
+                <div id="date-time-container"></div>
+                <img src="assets/logout.png" alt="Logout" id="exit_button"/>
+            </div>
+        </div>
+
+        <!-- The login section -->
+        <div id="login_div">
+            <div class="login-container" id="loginPromptBox_a">
+                <div class="login-box">
+                    <h2>Boudica AI AI-EPOS Till</h2>
+                    <div class="form-group">
+                        <label for="email">Email:</label>
+                        <input type="email" id="login_email" required placeholder="email">
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Password:</label>
+                        <input type="password" id="login_password">
+                    </div>
+                    <div class="login-buttons">
+                        <button id="login_ok_button">Login</button>
+                        <button id="sign_up_button">Sign Up</button>
+                    </div>
+                    <div class="divider">
+                        <span>sign up &amp; get</span>
+                    </div>                    
+                    <div>
+                        <div class='hero_header'>A free 250 Item POS Software</div>
+                    <div class="divider">
+                        <span>with</span>
+                    </div>                       
+                        <div class='hero_para'>No third-party access &amp; ransomware inoculation. Try now!</div>
+                    </div>                    
+                </div>
+            </div>
+        </div>          
+
+        <div class="tab-container">
+            <!-- Primary Tabs - Main Operations -->
+            <button class="tab-button active" onclick="openTab(event, 'tab2')">💳 Till</button>
+            <button class="tab-button" onclick="openTab(event, 'tab1')">📊 Dashboard</button>
+            <button class="tab-button" onclick="openTab(event, 'tab3')">📈 Reports</button>
+            <button class="tab-button" onclick="openTab(event, 'tabForecast')">🤖 Forecast</button>
+            
+            <!-- Secondary Tabs - Admin/Management -->
+            <button class="tab-button" onclick="openTab(event, 'tab4')">📦 Orders</button>
+            <button class="tab-button" onclick="openTab(event, 'tab5')">🏪 Stock</button>
+            <button class="tab-button" onclick="openTab(event, 'tab8')">🔍 Lookup</button>
+            <button class="tab-button" onclick="openTab(event, 'tab6')">💰 Float</button>
+            <button class="tab-button" onclick="openTab(event, 'tab7')">🏢 Suppliers</button>
+            <button class="tab-button" onclick="openTab(event, 'tab9')">📋 EOD</button>
+            <button class="tab-button" onclick="openTab(event, 'tab10')">✅ Stock Take</button>
+        </div>
+
+        <div class="tab-pages">
+            <!-- TAB 1: Dashboard -->
+            <div id="tab1" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>TODAY'S INSIGHTS<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <div class="tab-header">
+                    <button id="sales-comparison-btn">Sales Comparison</button>
+                    <button id="current-sales-btn">Sales Totals</button>
+                    <button id="stock-sales-comparison-btn">7-Day Sales History</button>
+                </div>
+                <div class="tab-content-area">
+                    <div class="center_div">
+                        <div id="dashboard-results" class="dashboard-results-area">Select an option above to view Dashboard data.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 2: Till -->
+            <div id="tab2" class="tab-content active">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>TILL - SALES<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <div class="till-wrapper" id="till">
+                    <div class="till-left-panel">
+                        <div class="keypad-container">
+                            <div id="keypad-display" class="keypad-display">0</div>
+                            <div class="keypad">
+                                <!-- Row 1 -->
+                                <button class="keypad-btn">7</button>
+                                <button class="keypad-btn">8</button>
+                                <button class="keypad-btn">9</button>
+                                <button class="keypad-btn keypad-btn-special" data-action="backspace">Back</button>
+                                <!-- Row 2 -->
+                                <button class="keypad-btn">4</button>
+                                <button class="keypad-btn">5</button>
+                                <button class="keypad-btn">6</button>
+                                <button class="keypad-btn keypad-btn-special" data-action="period">.</button>
+                                <!-- Row 3 -->
+                                <button class="keypad-btn">1</button>
+                                <button class="keypad-btn">2</button>
+                                <button class="keypad-btn">3</button>
+                                <button class="keypad-btn keypad-btn-special keypad-btn-multiply" data-action="multiply">x</button>
+                                <!-- Row 4 -->
+                                <button class="keypad-btn keypad-btn-clear" data-action="clear">C</button>
+                                <button class="keypad-btn">0</button>
+                                <button class="keypad-btn keypad-btn-enter keypad-btn-wide" id="till-enter-btn" data-action="enter">Enter</button>
+                            </div>
+                            <div class="payment-methods">
+                                <button class="payment-btn payment-btn-cash" data-method="Cash">💵 Cash</button>
+                                <button class="payment-btn payment-btn-card" data-method="Card">💳 Card</button>
+                                <button class="payment-btn" data-action="discount" style="background-color: #8abfeb;">% Discount</button>
+                                <button class="payment-btn" data-action="price-override" style="background-color: #8abfeb;">Price Override</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="receipt-container">
+                        <h4>Current Sale <span id="till-user-name-display" style="font-weight: normal; font-size: 0.8em; color: White;"></span></h4>
+                        <ul id="receipt-items" class="receipt-items-list">
+                             <!-- Items will be added here dynamically -->
+                        </ul>
+                        <div class="receipt-summary">
+                            <div class="receipt-subtotal">
+                                <strong>Subtotal:</strong>
+                                <span id="receipt-subtotal-amount">£0.00</span>
+                            </div>
+                            <div class="receipt-tax">
+                                <strong>Tax (20%):</strong>
+                                <span id="receipt-tax-amount">£0.00</span>
+                            </div>
+                            <div class="receipt-total">
+                                <strong>Total:</strong>
+                                <span id="receipt-total-amount">£0.00</span>
+                            </div>
+                            <button class="payment-btn" id="print-receipt-btn" data-action="print-receipt" style="background-color: #f0ad4e; margin-top: 10px; width: 100%;">🖨️ Print Receipt</button>
+                        </div>
+                    </div>  
+                    
+                    <div class="quick-add-container">
+                        <h4>Workshops &amp; Services</h4>
+                        <div class="quick-add-grid">
+                            <button class="quick-add-btn" data-description="Knitting Workshop" data-price="34.50">Knitting</button>
+                            <button class="quick-add-btn" data-description="Cross Stitch Workshop" data-price="34.50">Cross Stich</button>
+                            <button class="quick-add-btn" data-description="Needle Felting Workshop" data-price="34.50">Needle Felting</button>
+                        </div>
+                    </div>                      
+                </div>                      
+            </div>
+
+            <!-- TAB 3: Reports -->
+            <div id="tab3" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>REPORTS &amp; ANALYTICS<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <div class="reports-wrapper">
+                    <div class="report-tabs">
+                        <button class="report-tab active" onclick="switchReportTab(event, 'report-sales')">Sales Report</button>
+                        <button class="report-tab" onclick="switchReportTab(event, 'report-revenue')">Revenue Analysis</button>
+                        <button class="report-tab" onclick="switchReportTab(event, 'report-inventory')">Inventory</button>
+                        <button class="report-tab" onclick="switchReportTab(event, 'report-tax')">Tax Summary</button>
+                    </div>
+
+                    <div class="filter-bar">
+                        <div class="filter-group">
+                            <label for="report-start-date">From:</label>
+                            <input type="date" id="report-start-date">
+                        </div>
+                        <div class="filter-group">
+                            <label for="report-end-date">To:</label>
+                            <input type="date" id="report-end-date">
+                        </div>
+                        <button class="filter-btn" onclick="loadReport()">🔄 Generate</button>
+                        <button class="filter-btn" onclick="exportReportCSV()" style="background-color: #28a745;">📥 Export CSV</button>
+                    </div>
+
+                    <!-- Sales Report -->
+                    <div id="report-sales" class="report-content active">
+                        <div id="sales-report-container" class="results-list-container"></div>
+                    </div>
+
+                    <!-- Revenue Report -->
+                    <div id="report-revenue" class="report-content">
+                        <div id="revenue-report-container" class="results-list-container"></div>
+                    </div>
+
+                    <!-- Inventory Report -->
+                    <div id="report-inventory" class="report-content">
+                        <div id="inventory-report-container" class="results-list-container"></div>
+                    </div>
+
+                    <!-- Tax Summary -->
+                    <div id="report-tax" class="report-content">
+                        <div id="tax-report-container" class="results-list-container"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 4: Orders -->
+            <div id="tab4" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>ORDER HISTORY &amp; RECEIPTS<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <div class="orders-wrapper">
+                    <div class="filter-bar">
+                        <div class="filter-group">
+                            <label for="order-customer-email">Customer Email:</label>
+                            <input type="email" id="order-customer-email" placeholder="Leave blank for all orders">
+                        </div>
+                        <button class="filter-btn" onclick="loadOrderHistory()">🔍 Search</button>
+                    </div>
+                    <div id="orders-container" class="results-list-container">
+                        <p>Enter a customer email or click Search to load order history</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 5: Stock -->
+            <div id="tab5" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>STOCK MANAGEMENT<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <div class="stock-tabs">
+                    <button class="stock-tab-btn active" onclick="switchStockTab(event, 'stock-view')">View Stock</button>
+                    <button class="stock-tab-btn" onclick="switchStockTab(event, 'stock-add')">Add Stock Item</button>
+                    <button class="stock-tab-btn" onclick="switchStockTab(event, 'stock-in')">Stock In</button>
+                </div>
+
+                <!-- View Stock -->
+                <div id="stock-view" class="stock-tab-content active">
+                    <div class="page-form-group" style="z-index:1000;">
+                        <label for="show-products-supplier-filter">Filter by Supplier</label>
+                        <select id="show-products-supplier-filter" name="show-products-supplier-filter" class="supplier-select-list">
+                            <option value="">All Suppliers</option>
+                        </select>                   
+                    </div>                
+                    <div id="product-list-container" class="results-list-container">
+                        <!-- Product table will be dynamically inserted here -->
+                    </div>
+                </div>
+
+                <!-- Add Stock Item -->
+                <div id="stock-add" class="stock-tab-content">
+                    <form class="stock-form" id="add-stock-form">
+                        <div class="page-form-group">
+                            <label for="stock-supplier">Supplier</label>
+                            <select id="stock-supplier" name="stock-supplier" class="supplier-select-list">
+                               <option value="" disabled selected>Select a supplier</option>
+                            </select>
+                        </div>
+                        <div class="page-form-group">
+                            <label for="stock-description">Description</label>
+                            <textarea id="stock-description" name="stock-description" rows="3"></textarea>
+                        </div>
+                        <div class="page-form-group">
+                            <label for="stock-price">Price (£)</label>
+                            <input type="number" id="stock-price" name="stock-price" min="0" step="0.01" placeholder="0.00">
+                        </div>
+                        <div class="page-form-group">
+                            <label for="stock-quantity">Quantity</label>
+                            <input type="number" id="stock-quantity" name="stock-quantity" min="0" step="1" required value="0">
+                        </div>
+                        <div class="page-form-group">
+                            <label for="stock-barcode">Barcode</label>
+                            <input type="text" id="stock-barcode" name="stock-barcode">
+                        </div>
+                        <div class="tab-header">
+                            <button type="submit" class="form-submit-btn call_action" style="background-color: #3EDA95;">✅ Add Stock Item</button>
+                        </div>                    
+                    </form>
+                </div>
+
+                <!-- Stock In -->
+                <div id="stock-in" class="stock-tab-content">
+                    <form class="stock-form" id="stock-in-form">
+                        <div class="page-form-group">
+                            <label for="stock-in-quantity">Quantity</label>
+                            <input type="number" id="stock-in-quantity" name="stock-in-quantity" min="1" step="1" required value="1">
+                        </div>
+                        <div class="page-form-group">
+                            <label for="stock-in-barcode">Barcode</label>
+                            <input type="text" id="stock-in-barcode" name="stock-in-barcode" placeholder="Scan or enter barcode" required>
+                        </div>
+                        <div class="tab-header">
+                            <button type="submit" class="form-submit-btn call_action" style="background-color: #3EDA95;">📦 Add Stock</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- TAB 6: Add Float -->
+            <div id="tab6" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>DAILY FLOAT<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <form class="float-form">
+                    <div class="page-form-group">
+                        <label for="float-amount">Float Amount (£)</label>
+                        <input type="number" id="float-amount" name="float-amount" min="0" step="0.01" required placeholder="50.00">
+                    </div>
+                    <div class="tab-header">
+                        <button type="submit" class="tab-button call_action" id="set-float-btn" style="background-color: #3EDA95;">💰 Set Float</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- TAB 7: Suppliers -->
+            <div id="tab7" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>SUPPLIER MANAGEMENT<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <form class="supplier-form" id="add-supplier-form">
+                    <div class="page-form-group">
+                        <label for="supplier-name">Name</label>
+                        <input type="text" id="supplier-name" name="supplier-name" required>
+                    </div>
+                    <div class="page-form-group">
+                        <label for="supplier-address">Address</label>
+                        <textarea id="supplier-address" name="supplier-address" rows="3" required></textarea>
+                    </div>
+                    <div class="page-form-group">
+                        <label for="supplier-email">Email Address</label>
+                        <input type="email" id="supplier-email" name="supplier-email">
+                    </div>
+                    <div class="page-form-group">
+                        <label for="supplier-phone">Phone Number</label>
+                        <input type="tel" id="supplier-phone" name="supplier-phone">
+                    </div>                            
+                    <div class="page-form-group">
+                        <label for="supplier-postcode">Postcode</label>
+                        <input type="text" id="supplier-postcode" name="supplier-postcode">
+                    </div>
+                    <div class="tab-header">
+                        <button type="submit" class="form-submit-btn call_action" style="background-color: #3EDA95;">➕ Add Supplier</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- TAB 8: Lookup -->
+            <div id="tab8" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>PRODUCT LOOKUP<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <form class="stock-form" id="productLookup">
+                    <div class="page-form-group">
+                        <label for="lookup-barcode">Scan or Enter Barcode/Description</label>
+                        <input type="text" id="lookup-barcode" name="lookup-barcode" placeholder="e.g., 5012345678900 or 'Blue Widget'">
+                    </div>
+                    <div class="tab-header">
+                        <button type="button" class="form-submit-btn call_action" id="lookup-product-btn" style="background-color: #3EDA95;">🔍 Lookup</button>
+                    </div> 
+                </form>
+                <div id="product-lookup-results" class="results-list-container">
+                    <!-- Results will be displayed here dynamically -->
+                </div>   
+            </div>
+
+            <!-- TAB 9: End of Day -->
+            <div id="tab9" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>END OF DAY SETTLEMENT<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <form class="eod-form">
+                    <div class="tab-header">
+                        <button id="process-eod-btn" class="call-action" style="background-color: #3EDA95;">🔐 Process EOD</button>
+                    </div>                     
+                    <div class="page-form-group">
+                        <div id="eod-results" class="eod-results-form" style="display: none;">
+                            <div class="page-form-group">
+                                <label for="eod-card-sales">Card Sales (£)</label>
+                                <input type="text" id="eod-card-sales" name="eod-card-sales" readonly>
+                            </div>
+                            <div class="page-form-group">
+                                <label for="eod-cash-sales">Cash Sales (£)</label>
+                                <input type="text" id="eod-cash-sales" name="eod-cash-sales" readonly>
+                            </div>
+                            <div class="page-form-group">
+                                <label for="eod-total">Total Sales (£)</label>
+                                <input type="text" id="eod-total" name="eod-total" readonly>
+                            </div>
+                            <div class="page-form-group">
+                                <label for="eod-float">Float Amount (£)</label>
+                                <input type="text" id="eod-float" name="eod-float" readonly>
+                            </div>
+                        </div>
+                    </div>        
+                </form> 
+            </div>
+
+            <!-- TAB 10: Stock Take -->
+            <div id="tab10" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>STOCK TAKE<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <form class="float-form"  id="staockTakeAdd">
+                    <div class="page-form-group">
+                        <label for="st_barcode">Barcode</label>
+                        <input type="text" id="st_barcode" name="st_barcode" required placeholder="Barcode">
+                        <div class="stock_take_count">Current Shelf Item Count:<span id="stock_take_count">0</span></div>
+                        <div class="stock_take_count">Current Stock:<span id="store_stock_count">0</span></div>
+                    </div>
+                    <div class="tab-header">
+                        <button type="button" class="tab-button call_action" id="set-stock_take-btn" style="background-color: #3EDA95;">➕ Add Item</button>
+                    </div>
+                </form>
+                <div class="page-form-group">
+                    <div class="tab-header" style="display: flex; gap: 10px; justify-content: flex-start;">
+                        <button type="button" class="tab-button call_action" id="set-stock_take_complete_btn" style="background-color: #3EDA95;">✅ Complete</button>
+                        <button type="button" class="tab-button call_action" id="accept-all-discrepancies-btn" style="background-color: #f0ad4e; display: none;">✓ Accept All</button>
+                    </div>
+                    <div id="stock_take_completion" class="results-list-container"></div> 
+                </div>
+            </div>
+
+            <!-- TAB FORECAST: Boudica AI Sales & Inventory Forecasting -->
+            <div id="tabForecast" class="tab-content" style="padding: var(--spacing-lg); min-height: 400px;">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>🤖 BOUDICA AI FORECASTING<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+
+                <div style="flex: 1; display: flex; flex-direction: column; gap: var(--spacing-lg);">
+                    <!-- Sales Predictions Section -->
+                    <div>
+                        <h2 style="margin: 0 0 var(--spacing-lg) 0; color: var(--primary);">📊 Sales Predictions</h2>
+                        
+                        <div class="forecast-grid">
+                            <!-- Daily Sales Forecast -->
+                            <div class="forecast-card forecast-daily">
+                                <h3>📅 Today's Sales</h3>
+                                <p>Based on last 10 Thursdays (same day of week)</p>
+                                <button id="forecast-daily-btn">Get Daily Forecast</button>
+                            </div>
+
+                            <!-- Weekly Sales Forecast -->
+                            <div class="forecast-card forecast-weekly">
+                                <h3>📊 This Week's Sales</h3>
+                                <p>Based on last 10 weeks of same week number</p>
+                                <button id="forecast-weekly-btn">Get Weekly Forecast</button>
+                            </div>
+
+                            <!-- Monthly Sales Forecast -->
+                            <div class="forecast-card forecast-monthly">
+                                <h3>📈 This Month's Sales</h3>
+                                <p>Based on last 10 same months (seasonal)</p>
+                                <button id="forecast-monthly-btn">Get Monthly Forecast</button>
+                            </div>
+                        </div>
+
+                        <!-- Results for Sales Forecasts -->
+                        <div class="forecast-results">
+                            <div id="daily-forecast-result" class="forecast-result-item" style="display: none;"></div>
+                            <div id="weekly-forecast-result" class="forecast-result-item" style="display: none;"></div>
+                            <div id="monthly-forecast-result" class="forecast-result-item" style="display: none;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Inventory Reordering Section -->
+                    <div>
+                        <h2 style="margin: var(--spacing-lg) 0; color: var(--primary);">📦 Inventory Reordering</h2>
+                        
+                        <div class="forecast-grid" style="grid-template-columns: 1fr;">
+                            <!-- Reorder Prediction -->
+                            <div class="forecast-card forecast-reorder">
+                                <h3>When Should We Reorder?</h3>
+                                <p>Enter a barcode to predict reorder timing and quantity</p>
+                                
+                                <div class="reorder-input-section" style="margin-top: auto;">
+                                    <label for="reorder-barcode">Product Barcode:</label>
+                                    <div class="reorder-input-group">
+                                        <input type="text" id="reorder-barcode" placeholder="Scan or enter barcode...">
+                                        <button id="forecast-reorder-btn">Predict</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Reorder Results -->
+                        <div class="forecast-results">
+                            <div id="reorder-prediction-result" class="forecast-result-item" style="display: none;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Loading Indicator -->
+                    <div id="forecast-loading" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; display: none;">
+                        <div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); text-align: center;">
+                            <div class="spinner"></div>
+                            <div class="loading-text">🤖 Boudica is analyzing data...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>        
+
+        <div class="footer">
+            <p>&copy; OmniIndex 2025 Designed by Matt George</p>
+            <p>Powered by Boudica AI &copy;</p>
+        </div>
+
+        <!-- Notification -->
+        <div id="toast-container"></div>
+
+        <!-- Loading Overlay -->
+        <div id="loading-overlay" class="loading-overlay">
+            <div class="spinner"></div>
+        </div>
+
+        <script>
+            // Additional helper function for reports
+            function switchReportTab(evt, tabName) {
+                var i, tabcontent, tabbuttons;
+                tabcontent = document.querySelectorAll('.report-content');
+                for (i = 0; i < tabcontent.length; i++) tabcontent[i].classList.remove('active');
+                tabbuttons = document.querySelectorAll('.report-tab');
+                for (i = 0; i < tabbuttons.length; i++) tabbuttons[i].classList.remove('active');
+                document.getElementById(tabName).classList.add('active');
+                evt.target.classList.add('active');
+            }
+
+            // Helper function for stock tabs
+            function switchStockTab(evt, tabName) {
+                var i, tabcontent, tabbuttons;
+                tabcontent = document.querySelectorAll('.stock-tab-content');
+                for (i = 0; i < tabcontent.length; i++) tabcontent[i].classList.remove('active');
+                tabbuttons = document.querySelectorAll('.stock-tab-btn');
+                for (i = 0; i < tabbuttons.length; i++) tabbuttons[i].classList.remove('active');
+                document.getElementById(tabName).classList.add('active');
+                evt.target.classList.add('active');
+            }
+        </script>
+    </body>
+</html>

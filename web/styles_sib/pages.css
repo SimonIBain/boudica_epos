@@ -1,0 +1,548 @@
+body {
+
+    min-width: 100vw;
+    min-height: 100vh;
+    background-image: url("../assets/background.png");
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: cover;
+    font-family: 'Montserrat', sans-serif;
+
+
+  display: flex;
+  flex-direction: column;    
+}
+
+.header-container {
+    position: absolute;
+    width: 100%;
+    top: 0;
+    left: 0px;
+    min-height: 75px;
+    background-color: #06142c;
+    color: #fff;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 0px;
+    padding: 9px 20px;
+    box-sizing: border-box;
+    border-bottom: 4px solid #039cd8;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.header-logo {
+    height: 40px;
+    width: auto;
+}
+
+.header-title {
+    font-size: 0.75em;
+    font-weight: bold;
+    margin-top: 2px;
+}
+
+.header-right {
+    font-size: 0.75em;
+    text-align: right;
+    white-space: nowrap;   
+    display: flex;
+    align-items: center;
+    gap: 15px; 
+}
+
+.header-right img {
+    width: 32px;
+    height: auto;
+    cursor: pointer;
+}
+
+.tab-container {
+    /* position: absolute;
+    top: 75px; */
+    margin-top: 99px;
+    left: 0;
+    width: 100%;
+    display: flex;
+    justify-content: center; /* This centers the tab buttons */
+    gap: 5px; /* This adds a little space between the buttons */
+    background: none; /* Remove any background */
+}
+
+.tab-button {
+    background: none;
+    border: none;
+    padding: 10px 20px;
+    font-size: 1em;
+    cursor: pointer;
+    color: #fff; /* Set text color to white or a contrasting color */
+    opacity: 0.7; /* Slightly transparent to blend with background */
+    transition: opacity 0.3s ease;
+    border-bottom: 2px solid transparent; /* Add transparent border initially */
+}
+
+.tab-button:hover {
+    opacity: 1; /* Fully visible on hover */
+}
+
+.tab-button.active {
+    opacity: 1;
+    /* Add any active state styling here, e.g., underline */
+    border-bottom: 2px solid #fff; /* White underline for active tab */
+}
+
+.tab-pages {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    /* height: 100% */
+}
+
+.tab-content {
+    display: none;
+    flex-direction: column;
+    /* justify-content: center; */
+    align-items: center;
+    width: 100%;
+    /* height: 100%; */
+    margin-top: 32px; /* Adjust based on header and tab container height */
+    height: calc(76vh - 32px); /* Fill the remaining viewport height */
+    padding: 20px;
+    box-sizing: border-box;
+    color: #fff;
+}
+
+.tab-content.active {
+    display: flex;
+}
+
+.tab-heading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0px; /* Adjust as needed for spacing */
+    font-size: 2.5em;
+    font-weight: bold;
+    padding-bottom: 20px;
+    letter-spacing: 1.5px;
+    text-shadow: 4px 8px 0 rgba(255, 255, 255, 0.05), 0px 0px 16px rgba(70, 145, 250, 0.5), 0 0 8px rgba(235, 249, 255, 0.92);
+    margin-bottom: 20px;
+    color: #afe8f9;
+}
+
+/*.top {
+     position: relative;
+    margin-bottom: 32px; 
+}*/
+
+.tab-header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    margin-bottom: 20px;
+    text-shadow: 4px 8px 0 rgba(255, 255, 255, 0.05);
+}
+
+.tab-header button {
+    background-color: #95bee7;
+    color: #25214E;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    min-width: 225px;
+    margin-right: 5px;
+}
+
+.tab-header button:hover {
+    background-color: #3EDA95;
+} 
+
+.tab-header .callaction {
+    background-color: #2196F3;
+}
+
+.tab-content-area {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: 75%;
+    min-height: 45vh;
+    position: relative;
+    margin-top: 30px;
+    margin-bottom: 30px;    
+     border: 1px solid white;
+
+    /*  box-shadow: 0 8px 0 -8px black; */
+    background-color: transparent;
+}
+
+.tab-content-area::before,
+.tab-content-area::after {
+  content: "";
+  margin: -10px;
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  background-color: transparent; /* Match container background */
+}
+
+.tab-content-area::before {
+  top: 0;
+  left: 100%;
+  border-top: 3px solid white; /* Add border for the corner */
+  border-right: 3px solid white;
+}
+
+.tab-content-area::after {
+  bottom: 0;
+  right: 0;
+  border-bottom: 3px solid white;
+  border-right: 3px solid white;
+}
+
+.center_div {
+    flex: 1;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.center_div::before,
+.center_div::after {
+    content: "";
+    margin: -10px;
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    background-color: transparent; /* Match container background */
+}
+
+.center_div::before {
+    top: 0;
+    left: 0;
+    border-top: 3px solid white; /* Add border for the corner */
+    border-left: 3px solid white;
+}
+
+.center_div::after {
+  bottom: 0;
+    left: 0;
+    border-bottom: 3px solid white;
+    border-left: 3px solid white;
+}
+
+.holder_div {
+    /* height: 97%; */
+    width: 90%;
+    margin-top: 20px;
+    margin-bottom: 20px;
+    /* padding: 10px; */
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: auto;
+    color: #FFFFFF;
+}
+
+
+.supplier-form,
+.stock-form,
+.float-form,
+.eod_form {
+    margin: 0 auto;
+    padding-top: 10px;
+}
+
+.page-form-group {
+    margin-bottom: 18px;
+    display: flex;
+    flex-direction: column;
+}
+
+.page-form-group-inline {
+    display: flex;
+    gap: 15px;
+}
+
+.page-form-group label {
+    margin-bottom: 6px;
+    font-weight: 600;
+    color: white;
+    font-size: 15px;
+}
+
+input,
+textarea,
+select {
+    width: 575px;
+    padding: 12px;
+    border: 1px solid #e3e7ed;
+    border-radius: 6px;
+    font-size: 15px;
+    box-sizing: border-box;
+    font-family: inherit;
+    background-color: #486586;
+    transition: border 0.2s;
+    color: #FFFFFF;
+}
+
+td input,
+td textarea,
+td select {
+    width: 125px;
+    padding: 6px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    box-sizing: border-box;
+    font-family: inherit;
+    background-color: #486586;
+    transition: border 0.2s;
+    color: #FFFFFF;
+}
+
+.page-form-group input:focus,
+.page-form-group textarea:focus,
+.page-form-group select:focus {
+    border: 1.5px solid #4f8cff;
+    outline: none;
+}
+
+.page-form-group select:invalid {
+    color: #AEBEC1; /* Gray color for placeholder text */
+}
+
+.page-form-group input::placeholder {
+    color: #AEBEC1; /* Gray color for placeholder text */
+}
+
+.page-form-group textarea {
+    resize: vertical; /* Allow vertical resizing */
+}
+
+.form-top {
+    position: absolute;
+    margin-top: 20px;
+    top: 20vh;
+}
+
+#product-list-container {
+    /* position: absolute; */
+    margin-top: 20px;
+    height: 34vh;
+    overflow-x: auto;
+    /* top: 28vh; */
+    /* width: 1248px; */
+}
+
+.dashboard-results-area {
+    max-height: 40vh;
+    overflow: auto;
+    background: #f7f9fb;
+    border: 1px solid #e3e7ed;
+    border-radius: 12px;
+    /* margin-top: 24px;
+    padding: 24px 12px; */
+    /* min-height: 120px; */
+    color: #222;
+    font-family: 'Inter', Arial, Helvetica, sans-serif;
+    font-size: 1.05em;
+    box-shadow: 0 1px 4px rgba(60,72,88,0.04) inset;
+}
+
+.dashboard-results-area h4, .dashboard-results-area h5 {
+    color: #4f8cff;
+    text-shadow: none;
+}
+
+.dashboard-results-area table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 15px 0;
+}
+
+.dashboard-results-area th, .dashboard-results-area td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+
+.dashboard-results-area th {
+    background-color: #f2f2f2;
+}
+
+.dashboard-results-area canvas {
+    /* max-height: 350px; */
+    width: 100% !important;
+    margin-top: 15px;
+}
+
+.dashboard-total-sales {
+    font-size: 2em;
+    color: #4f8cff;
+    text-shadow: none;
+    margin: 16px 0;
+}
+
+#date-time-container {
+    width: 8vw;
+}
+
+.stock_take_count {
+    font-weight: 800;
+    margin-top: 6px;
+}
+
+.stock_take_count span {
+    margin-left: 5px;
+}
+
+/** Product lookup */
+.product_lookup_result_div {
+    max-height: 35vh;
+    width: 95%;
+    overflow: scroll;
+}
+
+.product_lookup_result_container {
+    border: 1px solid #d1dde9;
+    border-radius: 4px;
+    background-color: #f8f9fa;
+    margin-bottom: 5px;
+}
+
+.product_lookup_result {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 12px 15px;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.product_lookup_result:last-child {
+    border-bottom: none;
+}
+
+.product_lookup_result_header {
+    font-weight: 700;
+    font-size: 11pt;
+    color: #001f3f; /* Navy */
+    margin-right: 20px;
+    flex-shrink: 0;
+}
+
+.product_lookup_result_item {
+    font-size: 11pt;
+    color: #333;
+    text-align: right;
+    word-break: break-word; /* Handle long descriptions */
+}
+
+.product_lookup_result_container input {
+    width: 75px;
+    height: 23px;
+    border: none;
+}
+
+/* --- Invoice Drop Zone --- */
+.drop-zone {
+    width: 575px; /* Match other inputs */
+    height: 100px;
+    padding: 20px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-family: inherit;
+    font-weight: 500;
+    font-size: 16px;
+    cursor: pointer;
+    color: #AEBEC1;
+    border: 2px dashed #486586;
+    border-radius: 6px;
+    transition: border-color 0.3s, background-color 0.3s;
+    position: relative; /* For positioning the input */
+}
+
+.drop-zone:hover {
+    border-color: #4f8cff;
+}
+
+.drop-zone-over {
+    border-style: solid;
+    background-color: rgba(79, 140, 255, 0.1);
+}
+
+.drop-zone-input {
+    display: none; /* Hide the default file input */
+}
+
+/* Loading Overlay Styles */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: none; /* Hidden by default */
+    justify-content: center;
+    align-items: center;
+    z-index: 10000; /* Make sure it's on top of everything */
+}
+
+.loading-overlay.show {
+    display: flex;
+}
+
+.spinner {
+    width: 60px;
+    height: 60px;
+    border: 6px solid #f3f3f3;
+    border-top: 6px solid #3498db; /* A nice blue color */
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.results-list-container {
+    width: 95%;
+    max-height: 45vh; /* A generous height for content */
+    overflow-y: auto; /* Ensure vertical scrolling */
+    overflow-x: hidden; /* Prevent horizontal scrolling */
+    margin: 20px auto 0 auto;
+    padding: 10px;
+    box-sizing: border-box;
+    background-color: rgba(255, 255, 255, 0.05); /* A subtle background to define the area */
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+}
+
+.footer {
+  margin-top: 20px;
+  width: 100%;
+  background-color: transparent;
+  color: white;
+  text-align: center;
+  font-size: 10pt;
+  padding-bottom: 10px;
+}
