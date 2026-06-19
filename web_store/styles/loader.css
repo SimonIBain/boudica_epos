@@ -1,0 +1,13 @@
+/* --- Loader Styles --- */
+.loader-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    min-height: 250px; /* Give it some space to breathe */
+}
+
+.loading-gif {
+    width: 128px;
+    height: auto;
+}

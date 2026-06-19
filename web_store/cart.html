@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Cart - The Curiosity Cabins</title>
+    <link rel="icon" href="assets/curiosity_cabin.ico" type="image/x-icon">
+    <link rel="stylesheet" href="styles/toast.css">
+    <link rel="stylesheet" href="styles/styles.css">
+    <link rel="stylesheet" href="styles/cart.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        .stripe-element {
+            border: 1px solid #ddd;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 12px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        .stripe-element--focus {
+            border-color: #0066cc;
+            box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+        }
+        .stripe-element--invalid {
+            border-color: #dc3545;
+        }
+        .payment-error {
+            color: #dc3545;
+            margin-top: 8px;
+            font-size: 14px;
+        }
+        .payment-success {
+            color: #28a745;
+            margin-top: 8px;
+            font-size: 14px;
+        }
+        #payment-processing {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            margin: 15px 0;
+        }
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #0066cc;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <a href="index.html" class="nav-logo"><img src="assets/curiosity_cabin.png" alt="The Curiosity Cabins Logo"></a>
+            <ul class="nav-menu">
+                <li class="nav-item"><a href="index.html#home" class="nav-link">Home</a></li>
+                <li class="nav-item"><a href="index.html#products" class="nav-link">Products</a></li>
+                <li class="nav-item"><a href="#" class="nav-link">Workshops</a></li>
+                <li class="nav-item"><a href="#" class="nav-link">Special Orders</a></li>
+                <li class="nav-item"><a href="#" class="nav-link">News</a></li>
+                <li class="nav-item"><a href="index.html#about" class="nav-link">About</a></li>
+                <li class="nav-item"><a href="order-history.html" class="nav-link">Order History</a></li>
+                <li class="nav-item"><a href="reports.html" class="nav-link">Reports</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main class="cart-page">
+        <section class="cart-items">
+            <h2>Your Cart</h2>
+            <div id="cart-list">
+                <!-- Cart items will be injected here by JavaScript -->
+            </div>
+            <div class="cart-total">
+                <strong>Total:</strong> <span id="cart-total-price">£0.00</span>
+            </div>
+            <div class="form-group email-group">
+                <label for="customer-email">Email for receipt:</label>
+                <input type="email" id="customer-email" name="email" placeholder="your.email@example.com" required>
+            </div>
+            <div class="cart-actions">
+                <button id="clear-cart-btn" class="btn btn-danger">Clear Cart</button>
+                <a href="index.html" class="btn btn-secondary">Continue Shopping</a>
+                <button id="buy-now-btn" class="btn btn-success">Buy Now</button>
+            </div>
+
+            <!-- Cart Management Section -->
+            <section class="cart-management">
+                <h3>Cart Management</h3>
+                <div class="management-row">
+                    <div class="management-group">
+                        <label for="save-cart-name">Save this cart as:</label>
+                        <div class="input-group">
+                            <input type="text" id="save-cart-name" placeholder="e.g., Birthday Gifts" maxlength="30">
+                            <button id="save-cart-btn" class="btn btn-small btn-info">Save Cart</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="management-row">
+                    <div class="management-group">
+                        <label>Your Saved Carts:</label>
+                        <div id="saved-carts-list" class="carts-list">
+                            <p style="color: #999; font-size: 13px;">No saved carts yet</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="management-row">
+                    <div class="management-group">
+                        <button id="manage-carts-btn" class="btn btn-small btn-secondary">Manage All Carts</button>
+                        <button id="manage-wishlist-btn" class="btn btn-small btn-secondary">Manage Wishlist</button>
+                    </div>
+                </div>
+            </section>
+        </section>
+    </main>
+
+    <!-- Stripe Payment Modal -->
+    <div id="payment-modal" class="modal-overlay">
+        <div class="modal">
+            <button id="payment-modal-close" class="modal-close">&times;</button>
+            <h2>Complete Your Purchase</h2>
+            
+            <form id="payment-form">
+                <!-- Order Summary -->
+                <div style="background: #f9f9f9; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span>Subtotal:</span>
+                        <span id="payment-subtotal">£0.00</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span>VAT (20%):</span>
+                        <span id="payment-vat">£0.00</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px solid #ddd; padding-top: 8px;">
+                        <span>Total:</span>
+                        <span id="payment-total">£0.00</span>
+                    </div>
+                </div>
+
+                <!-- Cardholder Name -->
+                <div class="form-group">
+                    <label for="cardholder-name">Cardholder Name</label>
+                    <input type="text" id="cardholder-name" placeholder="John Doe" required>
+                </div>
+
+                <!-- Email -->
+                <div class="form-group">
+                    <label for="payment-email">Email</label>
+                    <input type="email" id="payment-email" placeholder="john@example.com" required>
+                </div>
+
+                <!-- Stripe Card Element -->
+                <div class="form-group">
+                    <label for="card-element">Card Details</label>
+                    <div id="card-element" class="stripe-element">
+                        <!-- Stripe Card Element will be inserted here -->
+                    </div>
+                    <div id="card-errors" class="payment-error"></div>
+                </div>
+
+                <!-- Processing indicator -->
+                <div id="payment-processing">
+                    <div class="spinner"></div>
+                    <p>Processing payment...</p>
+                </div>
+
+                <!-- Payment status message -->
+                <div id="payment-message" style="margin: 15px 0;"></div>
+
+                <!-- Submit Button -->
+                <button type="submit" id="submit-payment-btn" class="btn btn-success" style="width: 100%;">
+                    Pay Now
+                </button>
+
+                <p style="font-size: 12px; color: #666; margin-top: 15px; text-align: center;">
+                    Your payment is secure and encrypted by Stripe
+                </p>
+            </form>
+        </div>
+    </div>
+
+    <!-- Notification -->
+    <div id="toast-container"></div>
+
+    <!-- Stripe.js -->
+    <script src="https://js.stripe.com/v3/"></script>
+    <script type="module" src="js/stripe-checkout.js"></script>
+    <script type="module" src="js/cart.js"></script>
+</body>
+</html>

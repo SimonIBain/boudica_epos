@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chester House Crafts - Your Eyemouth Crafting resource</title>
+    <link rel="icon" href="assets/logo.ico" type="image/x-icon">
+    <!-- Prevent Caching -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <!-- End Prevent Caching -->
+    <link rel="stylesheet" href="styles/loader.css">
+    <link rel="stylesheet" href="styles/toast.css">
+    <link rel="stylesheet" href="styles/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <a href="#" class="nav-logo"><img src="assets/logo.png" alt="The Cozy Corner Logo"></a>
+            <ul class="nav-menu">
+                <li class="nav-item"><a href="#home" class="nav-link">Home</a></li>
+                <li class="nav-item"><a href="#products" class="nav-link">Products</a></li>
+                <li class="nav-item"><a href="#" class="nav-link" data-modal-target="#workshops-modal">Workshops</a></li>
+                <li class="nav-item"><a href="#" class="nav-link" data-modal-target="#special-order-modal">Special Orders</a></li>
+                <li class="nav-item"><a href="#" class="nav-link" data-modal-target="#news-modal">News</a></li>
+                <li class="nav-item"><a href="#" class="nav-link" data-modal-target="#boudica-chat-modal" title="Your friendly crafting assistant">Ask Boudica</a></li>
+                <li class="nav-item"><a href="#about" class="nav-link">About</a></li>
+                <li class="nav-item"><a href="order-history.html" class="nav-link">Order History</a></li>
+                <li class="nav-item"><a href="reports.html" class="nav-link">Reports</a></li>
+            </ul>
+            <form class="search-container" id="product-search-form">
+                <input type="search" id="product-search-input" class="search-input" placeholder="Search our site...">
+                <button type="submit" class="search-btn">Search</button>
+            </form>
+            <div class="cart-container">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-shopping-cart">
+                    <circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path>
+                </svg>
+                <a href="cart.html"><span id="cart-counter">0</span></a>
+            </div>
+            <div class="hamburger">
+                <span class="bar"></span>
+                <span class="bar"></span>
+                <span class="bar"></span>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <section id="home" class="hero">
+            <div class="hero-text-container">
+                <h1>Welcome to Chester House Crafts</h1>
+                    <h3>About Us</h3>
+                        <div style="margin-bottom: 8px;">At Chester House Crafts, our work is inspired by the natural beauty of Eyemouth and the rolling landscapes of the Scottish Borders.</div>
+                        <div style="margin-bottom: 8px;">Based in <strong>Chester House</strong>, an 18th-century townhouse that’s now both our family home and creative studio, we design and make unique crafts that celebrate nature, heritage, and imagination.</div>    
+                        <div>From traditional skills to fresh ideas, everything we create is <strong>handmade with care</strong> and rooted in a love of place. Whether you’re looking for something special for your home, a thoughtful gift, or simply a piece of the Borders to carry with you, you’ll find it here.</div>             
+                <!-- <p>
+                <a href="#products" class="btn">Explore Products</a>
+                </p> -->
+            </div>
+        </section>
+
+        <section id="products" class="products-section">
+            <h2>Our Products</h2>
+            <div id="product-list" class="product-grid">
+                <!-- Products will be injected here by JavaScript -->
+            </div>
+        </section>
+
+        <section id="about" class="about-section">
+            <div class="about-content">
+                <h2>About Us</h2>
+                <div>
+                    <p>Our crafts are inspired by the beautiful natural surroundings of Eyemouth, in the Scottish Borders.</p>
+                    <div>Chester House is an elegant 18th-century townhouse, originally built by the owners of Chesterbank Farm as their home away from the farm. Today, it serves as both our family home and the creative heart of Chester House Crafts
+                    — where traditional artistry and contemporary design come together in our art and craft studios.</div>
+                    <h4 style="margin-top: 8px;">Our Values</h4>
+                    <ul>
+                        <li>Craftsmanship — We believe in skill, care, and respect for materials.</li>
+                        <li>Sustainability — Where possible, we use local and natural resources.</li>
+                        <li>Community — We share our knowledge and welcome visitors into our creative world.</li>
+                        <li>Heritage — We honour traditional methods while reimagining them for today. </li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section id="socials" class="socials-section">
+            <h2>Latest on Facebook</h2>
+            <div class="fb-page-container">
+             <p>Nothing to be seen here.</p>
+             <p>Our crafting philosophy extends to our use of social media and your data, so we prefer to keep things simple and direct.</p>
+            </div>
+        </section>
+
+    </main>
+
+        <!-- Category Products Modal -->
+        <div id="category-products-modal" class="modal-overlay">
+            <div class="modal modal-large">
+                <button class="modal-close" data-modal-close>&times;</button>
+                <h2 id="category-modal-title">Category Products</h2>
+                <div id="category-product-list" class="product-list-modal">
+                    <!-- Products for the category will be injected here by JavaScript -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Search Results Modal -->
+        <div id="search-results-modal" class="modal-overlay">
+            <div class="modal modal-large">
+                <button class="modal-close" data-modal-close>&times;</button>
+                <h2 id="search-results-modal-title">Search Results</h2>
+                <div id="search-results-product-list" class="product-list-modal">
+                    <!-- Search results will be injected here by JavaScript -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Boudica Chat Modal -->
+        <div id="boudica-chat-modal" class="modal-overlay">
+            <div class="modal modal-large">
+                <button class="modal-close" data-modal-close>&times;</button>
+                <h2>Ask Boudica</h2>
+                <div id="boudica-chat-window" class="chat-window">
+                    <div class="chat-message boudica">
+                        <p>Hello! I'm Boudica, your friendly crafting assistant. How can I help you today? You can ask me for project ideas, yarn recommendations, or help with a pattern.</p>
+                    </div>
+                </div>
+                <form id="boudica-chat-form" class="chat-form">
+                    <input type="text" id="boudica-chat-input" placeholder="Type your message..." autocomplete="off">
+                    <button type="submit" class="btn">Send</button>
+                </form>
+                <div class="chat-disclaimer">
+                    <p>Your chats aren’t used to improve our models. Boudica & Gemini can make mistakes, so please check the response.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Workshops Modal -->
+        <div id="workshops-modal" class="modal-overlay">
+            <div class="modal">
+                <button class="modal-close" data-modal-close>&times;</button>
+                <h2>Workshops</h2>
+                <div class="workshop-list">
+                    <!-- Workshop Item 1 -->
+                    <div class="workshop-item">
+                        <div class="workshop-details">
+                            <h3 class="workshop-title">From time to time we mention local craft workshops that are happening in and around Eyemouth and the surrounding towns and villages.</h3>
+                            <p class="workshop-date">Please check back regularly to see if there are any up and coming ones.</p>
+                            <!-- <p class="workshop-price">Price: £45.00</p> -->
+                        </div>
+                        <!-- <button class="btn enroll-btn">Enroll</button> -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Special Order Modal -->
+        <div id="special-order-modal" class="modal-overlay">
+            <div class="modal">
+                <button class="modal-close" data-modal-close>&times;</button>
+                <h2>Request a Special Order</h2>
+                <form id="special-order-form">
+                    <div class="form-group">
+                        <label for="special-order-email">Your Email Address</label>
+                        <input type="email" id="special-order-email" name="email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="special-order-details">Details of what is to be ordered</label>
+                        <textarea id="special-order-details" name="details" rows="5" required></textarea>
+                    </div>
+                    <div class="form-buttons">
+                        <button type="submit" class="btn">Submit Request</button>
+                        <button type="button" class="btn btn-cancel" data-modal-close>Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- News Modal -->
+        <div id="news-modal" class="modal-overlay">
+            <div class="modal">
+                <button class="modal-close" data-modal-close>&times;</button>
+                <h2>Latest News</h2>
+                <div class="news-feed-container">
+                    <!-- <script src="https://cdn.jsdelivr.net/npm/@widgetbot/crate@3" async defer>
+                        new Crate({
+                            server: '1264869298984321105',
+                            channel: '1265670216462106676'
+                        })
+                    </script> -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Notification -->
+        <div id="toast-container"></div>  
+
+    <footer class="footer">
+        <div class="footer-content">
+            <p>&copy; 2025 The Curiosity Cabins. All Rights Reserved.</p>
+            <div class="social-links">
+                <a href="#">Facebook</a>
+                <a href="#">Instagram</a>
+                <a href="#">Pinterest</a>
+            </div>
+        </div>
+    </footer>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+
+
+</html>

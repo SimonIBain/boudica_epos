@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reporting Dashboard - The Curiosity Cabins</title>
+    <link rel="stylesheet" href="styles/styles.css">
+    <link rel="stylesheet" href="styles/toast.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <style>
+        .reports-container {
+            max-width: 1400px;
+            margin: 60px auto;
+            padding: 40px;
+        }
+
+        .reports-header {
+            margin-bottom: 40px;
+        }
+
+        .reports-header h1 {
+            font-size: 32px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .reports-header p {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .report-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .report-tab {
+            padding: 10px 20px;
+            background: white;
+            border: 2px solid #ddd;
+            border-bottom: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            color: #666;
+            border-radius: 4px 4px 0 0;
+        }
+
+        .report-tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: #667eea;
+        }
+
+        .report-content {
+            display: none;
+        }
+
+        .report-content.active {
+            display: block;
+        }
+
+        .filter-bar {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .filter-group label {
+            font-size: 13px;
+            font-weight: 600;
+            color: #333;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .filter-group input {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            min-width: 150px;
+        }
+
+        .btn-generate {
+            padding: 10px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .btn-generate:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .report-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .metric-card {
+            background: white;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .metric-card.highlight {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .metric-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            opacity: 0.8;
+            margin-bottom: 8px;
+        }
+
+        .metric-value {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .metric-description {
+            font-size: 12px;
+            opacity: 0.7;
+        }
+
+        .chart-container {
+            background: white;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .chart-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #333;
+        }
+
+        .table-container {
+            background: white;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .table-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px;
+        }
+
+        .table-header h3 {
+            margin: 0;
+            font-size: 16px;
+        }
+
+        .table-scroll {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th {
+            background: #f9f9f9;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #333;
+            border-bottom: 2px solid #eee;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+            color: #555;
+        }
+
+        tr:hover {
+            background: #f9f9f9;
+        }
+
+        .export-section {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .btn-export {
+            padding: 8px 16px;
+            background: white;
+            border: 2px solid #667eea;
+            color: #667eea;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-export:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .accounting-note {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #0d47a1;
+        }
+
+        @media (max-width: 768px) {
+            .report-tabs {
+                flex-direction: column;
+            }
+
+            .report-tab {
+                border-radius: 4px;
+                border-bottom: 2px solid #ddd;
+            }
+
+            .filter-bar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .filter-group input {
+                min-width: 100%;
+            }
+
+            .report-metrics {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-left">
+            <a href="index.html" class="logo">The Curiosity Cabins</a>
+        </div>
+        <div class="navbar-right">
+            <a href="cart.html" class="nav-link">Cart</a>
+            <a href="order-history.html" class="nav-link">Orders</a>
+        </div>
+    </nav>
+
+    <div class="reports-container">
+        <div class="reports-header">
+            <h1>📊 Reporting Dashboard</h1>
+            <p>Accounting-friendly business reports and analytics</p>
+        </div>
+
+        <div class="report-tabs">
+            <button class="report-tab active" data-report="sales">Sales Report</button>
+            <button class="report-tab" data-report="revenue">Revenue Analysis</button>
+            <button class="report-tab" data-report="inventory">Inventory Report</button>
+            <button class="report-tab" data-report="tax">Tax Summary</button>
+        </div>
+
+        <!-- Sales Report -->
+        <div id="sales" class="report-content active">
+            <div class="accounting-note">
+                <strong>📋 Sales Report:</strong> Detailed breakdown of all sales by product for the selected period. Suitable for income statement reconciliation.
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label>Start Date</label>
+                    <input type="date" id="sales-start-date">
+                </div>
+                <div class="filter-group">
+                    <label>End Date</label>
+                    <input type="date" id="sales-end-date">
+                </div>
+                <button class="btn-generate" onclick="generateSalesReport()">Generate Report</button>
+            </div>
+
+            <div id="sales-content">
+                <div class="empty-state">
+                    <p>Select a date range and click "Generate Report" to view sales data</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Revenue Report -->
+        <div id="revenue" class="report-content">
+            <div class="accounting-note">
+                <strong>💰 Revenue Analysis:</strong> Comprehensive revenue metrics including gross profit, margins, and customer statistics. For P&L statements.
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label>Start Date</label>
+                    <input type="date" id="revenue-start-date">
+                </div>
+                <div class="filter-group">
+                    <label>End Date</label>
+                    <input type="date" id="revenue-end-date">
+                </div>
+                <button class="btn-generate" onclick="generateRevenueReport()">Generate Report</button>
+            </div>
+
+            <div id="revenue-content">
+                <div class="empty-state">
+                    <p>Select a date range and click "Generate Report" to view revenue analysis</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Inventory Report -->
+        <div id="inventory" class="report-content">
+            <div class="accounting-note">
+                <strong>📦 Inventory Report:</strong> Current stock levels with total inventory value. For balance sheet asset valuation.
+            </div>
+
+            <div class="filter-bar">
+                <button class="btn-generate" onclick="generateInventoryReport()">Generate Report</button>
+            </div>
+
+            <div id="inventory-content">
+                <div class="empty-state">
+                    <p>Click "Generate Report" to view current inventory status</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tax Summary -->
+        <div id="tax" class="report-content">
+            <div class="accounting-note">
+                <strong>🏛️ Tax Summary:</strong> Sales tax calculations for VAT/GST reporting. Supports 20% and 5% rates.
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label>Start Date</label>
+                    <input type="date" id="tax-start-date">
+                </div>
+                <div class="filter-group">
+                    <label>End Date</label>
+                    <input type="date" id="tax-end-date">
+                </div>
+                <button class="btn-generate" onclick="generateTaxSummary()">Generate Report</button>
+            </div>
+
+            <div id="tax-content">
+                <div class="empty-state">
+                    <p>Select a date range and click "Generate Report" to view tax summary</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        import Toast from './toast.js';
+        const toast = Toast();
+
+        // Set default dates (last 30 days)
+        document.addEventListener('DOMContentLoaded', () => {
+            const endDate = new Date();
+            const startDate = new Date(endDate.getTime() - (30 * 24 * 60 * 60 * 1000));
+
+            const formatDate = (date) => date.toISOString().split('T')[0];
+
+            document.getElementById('sales-start-date').value = formatDate(startDate);
+            document.getElementById('sales-end-date').value = formatDate(endDate);
+            document.getElementById('revenue-start-date').value = formatDate(startDate);
+            document.getElementById('revenue-end-date').value = formatDate(endDate);
+            document.getElementById('tax-start-date').value = formatDate(startDate);
+            document.getElementById('tax-end-date').value = formatDate(endDate);
+        });
+
+        // Tab switching
+        document.querySelectorAll('.report-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const reportType = tab.dataset.report;
+                
+                document.querySelectorAll('.report-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.report-content').forEach(c => c.classList.remove('active'));
+                
+                tab.classList.add('active');
+                document.getElementById(reportType).classList.add('active');
+            });
+        });
+
+        // API calls
+        async function callReportAPI(command, params) {
+            try {
+                const searchParams = new URLSearchParams({
+                    username: 'web_store_user',
+                    password: 'web_store_pass',
+                    command: command,
+                    ...params
+                });
+
+                const response = await fetch(`https://demo.pgbc.ai/cgi-bin/boudica_pos?${searchParams.toString()}`);
+                if (!response.ok) throw new Error('API call failed');
+
+                return await response.json();
+            } catch (error) {
+                console.error('Error calling API:', error);
+                toast.showToast('Error generating report', 'error');
+                return null;
+            }
+        }
+
+        // Sales Report
+        async function generateSalesReport() {
+            const startDate = document.getElementById('sales-start-date').value;
+            const endDate = document.getElementById('sales-end-date').value;
+            const container = document.getElementById('sales-content');
+
+            if (!startDate || !endDate) {
+                toast.showToast('Please select both dates', 'info');
+                return;
+            }
+
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading report...</div>';
+
+            const data = await callReportAPI('salesreport', {
+                start_date: startDate,
+                end_date: endDate
+            });
+
+            if (!data) {
+                container.innerHTML = '<div class="error-message">Failed to generate report</div>';
+                return;
+            }
+
+            let html = `
+                <div class="report-metrics">
+                    <div class="metric-card highlight">
+                        <div class="metric-label">Total Revenue</div>
+                        <div class="metric-value">£${parseFloat(data.total_revenue || 0).toFixed(2)}</div>
+                        <div class="metric-description">from ${data.items?.length || 0} products</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Items Sold</div>
+                        <div class="metric-value">${data.total_items_sold || 0}</div>
+                        <div class="metric-description">total units</div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>Sales Details</h3>
+                    </div>
+                    <div class="table-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Product Code</th>
+                                    <th>Description</th>
+                                    <th>Quantity</th>
+                                    <th>Unit Price</th>
+                                    <th>Total Revenue</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+            `;
+
+            if (data.items && Array.isArray(data.items)) {
+                data.items.forEach(item => {
+                    html += `
+                        <tr>
+                            <td>${item.barcode}</td>
+                            <td>${item.description}</td>
+                            <td class="text-right">${item.quantity}</td>
+                            <td class="text-right">£${parseFloat(item.unit_price || 0).toFixed(2)}</td>
+                            <td class="text-right"><strong>£${parseFloat(item.revenue || 0).toFixed(2)}</strong></td>
+                        </tr>
+                    `;
+                });
+            }
+
+            html += `
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="export-section" style="padding: 15px;">
+                        <button class="btn-export" onclick="exportToCSV('sales', '${startDate}', '${endDate}')">📥 Export CSV</button>
+                    </div>
+                </div>
+            `;
+
+            container.innerHTML = html;
+        }
+
+        // Revenue Report
+        async function generateRevenueReport() {
+            const startDate = document.getElementById('revenue-start-date').value;
+            const endDate = document.getElementById('revenue-end-date').value;
+            const container = document.getElementById('revenue-content');
+
+            if (!startDate || !endDate) {
+                toast.showToast('Please select both dates', 'info');
+                return;
+            }
+
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading report...</div>';
+
+            const data = await callReportAPI('revenuereport', {
+                start_date: startDate,
+                end_date: endDate
+            });
+
+            if (!data) {
+                container.innerHTML = '<div class="error-message">Failed to generate report</div>';
+                return;
+            }
+
+            let html = `
+                <div class="report-metrics">
+                    <div class="metric-card highlight">
+                        <div class="metric-label">Gross Revenue</div>
+                        <div class="metric-value">£${parseFloat(data.gross_revenue || 0).toFixed(2)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Cost of Goods Sold</div>
+                        <div class="metric-value">£${parseFloat(data.cost_of_goods_sold || 0).toFixed(2)}</div>
+                        <div class="metric-description">at 15% COGS rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Gross Profit</div>
+                        <div class="metric-value">£${parseFloat(data.gross_profit || 0).toFixed(2)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Profit Margin</div>
+                        <div class="metric-value">${parseFloat(data.profit_margin_percent || 0).toFixed(1)}%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Transactions</div>
+                        <div class="metric-value">${data.transactions || 0}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Unique Customers</div>
+                        <div class="metric-value">${data.customers || 0}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Avg Transaction Value</div>
+                        <div class="metric-value">£${parseFloat(data.avg_transaction_value || 0).toFixed(2)}</div>
+                    </div>
+                </div>
+
+                <div class="export-section">
+                    <button class="btn-export" onclick="exportToCSV('revenue', '${startDate}', '${endDate}')">📥 Export CSV</button>
+                </div>
+            `;
+
+            container.innerHTML = html;
+        }
+
+        // Inventory Report
+        async function generateInventoryReport() {
+            const container = document.getElementById('inventory-content');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading report...</div>';
+
+            const data = await callReportAPI('inventoryreport', {});
+
+            if (!data) {
+                container.innerHTML = '<div class="error-message">Failed to generate report</div>';
+                return;
+            }
+
+            let html = `
+                <div class="report-metrics">
+                    <div class="metric-card highlight">
+                        <div class="metric-label">Total Inventory Value</div>
+                        <div class="metric-value">£${parseFloat(data.total_inventory_value || 0).toFixed(2)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Total Items</div>
+                        <div class="metric-value">${data.total_items || 0}</div>
+                        <div class="metric-description">units in stock</div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>Inventory Details</h3>
+                    </div>
+                    <div class="table-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Product Code</th>
+                                    <th>Description</th>
+                                    <th>Quantity</th>
+                                    <th>Unit Price</th>
+                                    <th>Total Value</th>
+                                    <th>Supplier</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+            `;
+
+            if (data.items && Array.isArray(data.items)) {
+                data.items.forEach(item => {
+                    html += `
+                        <tr>
+                            <td>${item.barcode}</td>
+                            <td>${item.description}</td>
+                            <td class="text-right">${item.quantity}</td>
+                            <td class="text-right">£${parseFloat(item.unit_price || 0).toFixed(2)}</td>
+                            <td class="text-right"><strong>£${parseFloat(item.total_value || 0).toFixed(2)}</strong></td>
+                            <td>${item.supplier}</td>
+                        </tr>
+                    `;
+                });
+            }
+
+            html += `
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="export-section" style="padding: 15px;">
+                        <button class="btn-export" onclick="exportToCSV('inventory')">📥 Export CSV</button>
+                    </div>
+                </div>
+            `;
+
+            container.innerHTML = html;
+        }
+
+        // Tax Summary
+        async function generateTaxSummary() {
+            const startDate = document.getElementById('tax-start-date').value;
+            const endDate = document.getElementById('tax-end-date').value;
+            const container = document.getElementById('tax-content');
+
+            if (!startDate || !endDate) {
+                toast.showToast('Please select both dates', 'info');
+                return;
+            }
+
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading report...</div>';
+
+            const data = await callReportAPI('taxsummary', {
+                start_date: startDate,
+                end_date: endDate
+            });
+
+            if (!data) {
+                container.innerHTML = '<div class="error-message">Failed to generate report</div>';
+                return;
+            }
+
+            let html = `
+                <div class="report-metrics">
+                    <div class="metric-card highlight">
+                        <div class="metric-label">Total Sales (Taxable)</div>
+                        <div class="metric-value">£${parseFloat(data.total_sales || 0).toFixed(2)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">VAT 20%</div>
+                        <div class="metric-value">£${parseFloat(data.vat_20pct || 0).toFixed(2)}</div>
+                        <div class="metric-description">standard rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">VAT 5%</div>
+                        <div class="metric-value">£${parseFloat(data.vat_5pct || 0).toFixed(2)}</div>
+                        <div class="metric-description">reduced rate</div>
+                    </div>
+                    <div class="metric-card highlight">
+                        <div class="metric-label">Total VAT Due</div>
+                        <div class="metric-value">£${parseFloat(data.total_vat_estimate || 0).toFixed(2)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Orders</div>
+                        <div class="metric-value">${data.orders || 0}</div>
+                    </div>
+                </div>
+
+                <div class="accounting-note" style="margin-top: 20px;">
+                    <strong>Note:</strong> This is an estimate based on 20% VAT. Adjust rates according to your jurisdiction's requirements.
+                </div>
+
+                <div class="export-section" style="margin-top: 20px;">
+                    <button class="btn-export" onclick="exportToCSV('tax', '${startDate}', '${endDate}')">📥 Export CSV</button>
+                </div>
+            `;
+
+            container.innerHTML = html;
+        }
+
+        // CSV Export
+        function exportToCSV(reportType, startDate = '', endDate = '') {
+            const timestamp = new Date().toISOString().split('T')[0];
+            const filename = `${reportType}-report-${timestamp}.csv`;
+
+            let csv = '';
+            if (reportType === 'sales') {
+                csv = 'Sales Report\n';
+                csv += `Period: ${startDate} to ${endDate}\n`;
+                csv += 'Product Code,Description,Quantity,Unit Price,Total Revenue\n';
+                // Get data from table
+                document.querySelectorAll('#sales-content table tbody tr').forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    csv += `"${cells[0].textContent}","${cells[1].textContent}",${cells[2].textContent},${cells[3].textContent},${cells[4].textContent}\n`;
+                });
+            } else if (reportType === 'revenue') {
+                csv = 'Revenue Report\n';
+                csv += `Period: ${startDate} to ${endDate}\n`;
+                csv += 'Metric,Value\n';
+                document.querySelectorAll('#revenue-content .metric-card').forEach(card => {
+                    const label = card.querySelector('.metric-label').textContent;
+                    const value = card.querySelector('.metric-value').textContent;
+                    csv += `"${label}","${value}"\n`;
+                });
+            } else if (reportType === 'inventory') {
+                csv = 'Inventory Report\n';
+                csv += 'Product Code,Description,Quantity,Unit Price,Total Value,Supplier\n';
+                document.querySelectorAll('#inventory-content table tbody tr').forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    csv += `"${cells[0].textContent}","${cells[1].textContent}",${cells[2].textContent},${cells[3].textContent},${cells[4].textContent},"${cells[5].textContent}"\n`;
+                });
+            } else if (reportType === 'tax') {
+                csv = 'Tax Summary Report\n';
+                csv += `Period: ${startDate} to ${endDate}\n`;
+                csv += 'Metric,Value\n';
+                document.querySelectorAll('#tax-content .metric-card').forEach(card => {
+                    const label = card.querySelector('.metric-label').textContent;
+                    const value = card.querySelector('.metric-value').textContent;
+                    csv += `"${label}","${value}"\n`;
+                });
+            }
+
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            window.URL.revokeObjectURL(url);
+
+            toast.showToast(`Report exported as ${filename}`, 'success');
+        }
+
+        window.exportToCSV = exportToCSV;
+        window.generateSalesReport = generateSalesReport;
+        window.generateRevenueReport = generateRevenueReport;
+        window.generateInventoryReport = generateInventoryReport;
+        window.generateTaxSummary = generateTaxSummary;
+    </script>
+</body>
+</html>

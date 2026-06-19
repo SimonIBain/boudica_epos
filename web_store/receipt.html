@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Receipt - The Curiosity Cabins</title>
+    <link rel="icon" href="assets/curiosity_cabin.ico" type="image/x-icon">
+    <link rel="stylesheet" href="styles/toast.css">
+    <link rel="stylesheet" href="styles/styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <style>
+        body {
+            background: #f5f5f5;
+        }
+
+        .receipt-container {
+            max-width: 900px;
+            margin: 60px auto;
+            padding: 0;
+        }
+
+        .receipt-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            justify-content: center;
+        }
+
+        .btn-receipt {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-print {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-print:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-pdf {
+            background: white;
+            color: #667eea;
+            border: 2px solid #667eea;
+        }
+
+        .btn-pdf:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-back {
+            background: white;
+            color: #666;
+            border: 2px solid #ddd;
+        }
+
+        .btn-back:hover {
+            background: #f9f9f9;
+        }
+
+        .receipt-paper {
+            background: white;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            font-family: 'Georgia', serif;
+            line-height: 1.6;
+        }
+
+        .receipt-header {
+            text-align: center;
+            border-bottom: 2px solid #333;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+
+        .business-name {
+            font-size: 28px;
+            font-weight: bold;
+            color: #333;
+            margin: 0 0 10px 0;
+        }
+
+        .business-info {
+            font-size: 12px;
+            color: #666;
+            margin: 5px 0;
+        }
+
+        .receipt-meta {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .meta-group h4 {
+            margin: 0 0 10px 0;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #333;
+            font-weight: 600;
+        }
+
+        .meta-group p {
+            margin: 5px 0;
+            color: #555;
+        }
+
+        .receipt-section {
+            margin: 30px 0;
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #333;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+
+        .items-table th {
+            text-align: left;
+            font-size: 12px;
+            font-weight: 600;
+            color: #333;
+            border-bottom: 1px solid #ddd;
+            padding: 10px 5px;
+        }
+
+        .items-table td {
+            padding: 12px 5px;
+            font-size: 13px;
+            color: #555;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .item-description {
+            text-align: left;
+        }
+
+        .item-qty {
+            text-align: center;
+        }
+
+        .item-price {
+            text-align: right;
+        }
+
+        .totals-section {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 2px solid #333;
+            width: 50%;
+            margin-left: auto;
+        }
+
+        .total-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            font-size: 14px;
+        }
+
+        .total-row.highlight {
+            font-weight: bold;
+            font-size: 16px;
+            border-top: 1px solid #ddd;
+            padding-top: 12px;
+            margin-top: 8px;
+        }
+
+        .final-total {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+            text-align: center;
+            margin-top: 20px;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 6px;
+        }
+
+        .payment-info {
+            text-align: center;
+            font-size: 13px;
+            color: #666;
+            margin-top: 20px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .status-badge.completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-badge.pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .receipt-footer {
+            text-align: center;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 2px solid #333;
+            font-size: 12px;
+            color: #999;
+        }
+
+        .receipt-footer p {
+            margin: 5px 0;
+        }
+
+        .thank-you {
+            text-align: center;
+            font-size: 14px;
+            font-weight: bold;
+            margin: 20px 0;
+            color: #333;
+        }
+
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 20px;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @media print {
+            body {
+                background: white;
+                margin: 0;
+                padding: 0;
+            }
+
+            .receipt-controls {
+                display: none;
+            }
+
+            .receipt-container {
+                margin: 0;
+                padding: 0;
+                max-width: 100%;
+            }
+
+            .receipt-paper {
+                box-shadow: none;
+                padding: 20px;
+                max-width: 800px;
+                margin: 0 auto;
+            }
+        }
+
+        @media (max-width: 600px) {
+            .receipt-paper {
+                padding: 20px;
+            }
+
+            .receipt-meta {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+
+            .totals-section {
+                width: 100%;
+            }
+
+            .items-table th,
+            .items-table td {
+                font-size: 12px;
+                padding: 8px 3px;
+            }
+
+            .business-name {
+                font-size: 20px;
+            }
+
+            .final-total {
+                font-size: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-left">
+            <a href="index.html" class="logo">The Curiosity Cabins</a>
+        </div>
+        <div class="navbar-right">
+            <a href="cart.html" class="nav-link">Cart</a>
+            <a href="order-history.html" class="nav-link">Orders</a>
+        </div>
+    </nav>
+
+    <div class="receipt-container">
+        <div class="receipt-controls">
+            <button class="btn-receipt btn-print" onclick="printReceipt()">🖨️ Print Receipt</button>
+            <button class="btn-receipt btn-pdf" onclick="downloadPDF()">📥 Download PDF</button>
+            <button class="btn-receipt btn-back" onclick="window.history.back()">← Back</button>
+        </div>
+
+        <div id="receipt-content">
+            <div class="loading">
+                <div class="spinner"></div>
+                <p>Loading receipt...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        import Toast from './toast.js';
+        const toast = Toast();
+
+        document.addEventListener('DOMContentLoaded', loadReceipt);
+
+        async function loadReceipt() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const orderId = urlParams.get('order_id');
+
+            if (!orderId) {
+                document.getElementById('receipt-content').innerHTML = 
+                    '<div class="error-message">No order ID provided. Please select an order from your order history.</div>';
+                return;
+            }
+
+            try {
+                const response = await fetch(
+                    `/cgi-bin/boudica_pos?username=web_store_user&password=web_store_pass&command=getreceipt&order_id=${encodeURIComponent(orderId)}`
+                );
+                
+                if (!response.ok) throw new Error('Failed to fetch receipt');
+
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('receipt-content').innerHTML = 
+                        `<div class="error-message">${data.error}</div>`;
+                    return;
+                }
+
+                renderReceipt(data.receipt);
+            } catch (error) {
+                console.error('Error loading receipt:', error);
+                toast.showToast('Failed to load receipt', 'error');
+                document.getElementById('receipt-content').innerHTML = 
+                    '<div class="error-message">Failed to load receipt. Please try again.</div>';
+            }
+        }
+
+        function renderReceipt(receipt) {
+            const orderDate = new Date(receipt.order_date);
+            const dateStr = orderDate.toLocaleDateString('en-GB', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+            const timeStr = orderDate.toLocaleTimeString('en-GB', {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+
+            let html = `
+                <div class="receipt-paper" id="receipt-paper">
+                    <div class="receipt-header">
+                        <div class="business-name">The Curiosity Cabins</div>
+                        <div class="business-info">📍 Eyemouth, Scotland</div>
+                        <div class="business-info">🌐 www.curiositycabins.com</div>
+                    </div>
+
+                    <div class="receipt-meta">
+                        <div class="meta-group">
+                            <h4>Order Details</h4>
+                            <p><strong>Order ID:</strong> ${receipt.order_id}</p>
+                            <p><strong>Date:</strong> ${dateStr}</p>
+                            <p><strong>Time:</strong> ${timeStr}</p>
+                            <p><strong>Payment:</strong> ${receipt.payment_method}</p>
+                        </div>
+                        <div class="meta-group">
+                            <h4>Status</h4>
+                            <p><strong>Order Status:</strong> <span class="status-badge ${receipt.order_status?.toLowerCase() === 'completed' ? 'completed' : 'pending'}">${receipt.order_status || 'Processing'}</span></p>
+                            <p><strong>Customer:</strong> ${receipt.customer_email}</p>
+                        </div>
+                    </div>
+
+                    <div class="receipt-section">
+                        <div class="section-title">Items Purchased</div>
+                        <table class="items-table">
+                            <thead>
+                                <tr>
+                                    <th class="item-description">Description</th>
+                                    <th class="item-qty">Qty</th>
+                                    <th class="item-price">Unit Price</th>
+                                    <th class="item-price">Total</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+            `;
+
+            if (receipt.items && Array.isArray(receipt.items)) {
+                receipt.items.forEach(item => {
+                    html += `
+                        <tr>
+                            <td class="item-description">${item.description}</td>
+                            <td class="item-qty">${item.quantity}</td>
+                            <td class="item-price">£${parseFloat(item.unit_price || 0).toFixed(2)}</td>
+                            <td class="item-price">£${parseFloat(item.line_total || 0).toFixed(2)}</td>
+                        </tr>
+                    `;
+                });
+            }
+
+            html += `
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="receipt-section">
+                        <div class="totals-section">
+                            <div class="total-row">
+                                <span>Subtotal:</span>
+                                <span>£${parseFloat(receipt.subtotal || 0).toFixed(2)}</span>
+                            </div>
+                            <div class="total-row">
+                                <span>VAT (${parseFloat(receipt.vat_rate_percent || 20).toFixed(0)}%):</span>
+                                <span>£${parseFloat(receipt.vat_amount || 0).toFixed(2)}</span>
+                            </div>
+                            <div class="total-row highlight">
+                                <span>TOTAL:</span>
+                                <span>£${parseFloat(receipt.total || 0).toFixed(2)}</span>
+                            </div>
+                        </div>
+
+                        <div class="final-total">
+                            £${parseFloat(receipt.total || 0).toFixed(2)}
+                        </div>
+
+                        <div class="payment-info">
+                            <p>Payment Method: <strong>${receipt.payment_method}</strong></p>
+                            <p>Order contains <strong>${receipt.item_count}</strong> item${receipt.item_count !== 1 ? 's' : ''}</p>
+                        </div>
+                    </div>
+
+                    <div class="thank-you">
+                        Thank you for your business! 🎉
+                    </div>
+
+                    <div class="receipt-footer">
+                        <p>This is your official receipt. Please keep it for your records.</p>
+                        <p>Order #${receipt.order_id} | Generated on ${new Date().toLocaleString('en-GB')}</p>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('receipt-content').innerHTML = html;
+        }
+
+        function printReceipt() {
+            window.print();
+        }
+
+        function downloadPDF() {
+            const element = document.getElementById('receipt-paper');
+            const urlParams = new URLSearchParams(window.location.search);
+            const orderId = urlParams.get('order_id');
+            
+            const opt = {
+                margin: 10,
+                filename: `receipt-${orderId}.pdf`,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2 },
+                jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' }
+            };
+
+            html2pdf().set(opt).from(element).save();
+        }
+
+        window.printReceipt = printReceipt;
+        window.downloadPDF = downloadPDF;
+    </script>
+</body>
+</html>

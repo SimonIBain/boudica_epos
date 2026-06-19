@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Confirmation - The Curiosity Cabins</title>
+    <link rel="stylesheet" href="styles/styles.css">
+    <link rel="stylesheet" href="styles/toast.css">
+    <style>
+        .confirmation-container {
+            max-width: 600px;
+            margin: 60px auto;
+            padding: 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            color: white;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .confirmation-header {
+            margin-bottom: 30px;
+        }
+
+        .confirmation-header h1 {
+            font-size: 32px;
+            margin: 0 0 10px 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .confirmation-header p {
+            font-size: 16px;
+            opacity: 0.9;
+            margin: 5px 0;
+        }
+
+        .order-id-box {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid white;
+        }
+
+        .order-id-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            opacity: 0.8;
+        }
+
+        .order-id-value {
+            font-size: 24px;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+            margin-top: 10px;
+            word-break: break-all;
+        }
+
+        .order-details {
+            text-align: left;
+            margin: 30px 0;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 8px;
+        }
+
+        .order-details h2 {
+            font-size: 18px;
+            margin: 0 0 15px 0;
+            border-bottom: 2px solid white;
+            padding-bottom: 10px;
+        }
+
+        .order-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .order-item:last-child {
+            border-bottom: none;
+        }
+
+        .item-name-qty {
+            flex: 1;
+        }
+
+        .item-price {
+            text-align: right;
+            min-width: 80px;
+        }
+
+        .order-total {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 2px solid rgba(255, 255, 255, 0.3);
+            display: flex;
+            justify-content: space-between;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .confirmation-message {
+            margin: 30px 0;
+            font-size: 14px;
+            line-height: 1.6;
+            opacity: 0.9;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: 2px solid white;
+            border-radius: 5px;
+            background: transparent;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .btn:hover {
+            background: white;
+            color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-primary {
+            background: white;
+            color: #667eea;
+        }
+
+        .btn-primary:hover {
+            background: #f0f0f0;
+            color: #764ba2;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .error-message {
+            background: rgba(255, 75, 75, 0.2);
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #ff4b4b;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-left">
+            <a href="index.html" class="logo">The Curiosity Cabins</a>
+        </div>
+    </nav>
+
+    <div class="confirmation-container">
+        <div class="confirmation-header">
+            <h1>✓ Order Confirmed</h1>
+            <p>Thank you for your purchase!</p>
+        </div>
+
+        <div class="order-id-box">
+            <div class="order-id-label">Order Number</div>
+            <div class="order-id-value" id="order-id">-</div>
+        </div>
+
+        <div class="order-details" id="order-details">
+            <h2>Order Summary</h2>
+            <div class="loading"></div>
+            <p style="margin: 10px 0 0 0;">Loading order details...</p>
+        </div>
+
+        <div class="confirmation-message">
+            <p>A confirmation email has been sent to your email address.</p>
+            <p>You can use your Order Number to track your order status.</p>
+        </div>
+
+        <div class="action-buttons">
+            <a href="index.html" class="btn btn-primary">Continue Shopping</a>
+            <a href="cart.html" class="btn">View Cart</a>
+            <a id="receipt-link" href="#" class="btn" style="display:none;">View Receipt</a>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const orderId = urlParams.get('order_id');
+
+            if (orderId) {
+                document.getElementById('order-id').textContent = orderId;
+                
+                // Set receipt link
+                const receiptLink = document.getElementById('receipt-link');
+                receiptLink.href = `receipt.html?order_id=${encodeURIComponent(orderId)}`;
+                receiptLink.style.display = 'inline-block';
+
+                // Load order details from localStorage
+                const lastOrderItems = localStorage.getItem('lastOrderItems');
+                const lastOrderTotal = localStorage.getItem('lastOrderTotal');
+                const lastOrderDate = localStorage.getItem('lastOrderDate');
+
+                if (lastOrderItems && lastOrderTotal) {
+                    try {
+                        const items = JSON.parse(lastOrderItems);
+                        const total = parseFloat(lastOrderTotal);
+                        const date = new Date(lastOrderDate);
+
+                        let itemsHtml = '';
+                        items.forEach(item => {
+                            const subtotal = (item.price * item.quantity).toFixed(2);
+                            itemsHtml += `
+                                <div class="order-item">
+                                    <div class="item-name-qty">
+                                        <strong>${item.name}</strong> (x${item.quantity})
+                                    </div>
+                                    <div class="item-price">£${subtotal}</div>
+                                </div>
+                            `;
+                        });
+
+                        itemsHtml += `
+                            <div class="order-total">
+                                <span>Subtotal:</span>
+                                <span>£${(total / 1.20).toFixed(2)}</span>
+                            </div>
+                            <div class="order-total">
+                                <span>VAT (20%):</span>
+                                <span>£${(total - (total / 1.20)).toFixed(2)}</span>
+                            </div>
+                            <div class="order-total" style="font-weight: bold; border-top: 1px solid rgba(255, 255, 255, 0.3); padding-top: 10px; margin-top: 10px;">
+                                <span>Total:</span>
+                                <span>£${total.toFixed(2)}</span>
+                            </div>
+                        `;
+
+                        document.getElementById('order-details').innerHTML = `
+                            <h2>Order Summary</h2>
+                            ${itemsHtml}
+                            <p style="font-size: 12px; opacity: 0.8; margin-top: 15px;">
+                                Order placed: ${date.toLocaleString()}
+                            </p>
+                        `;
+                    } catch (error) {
+                        console.error('Error loading order details:', error);
+                    }
+                }
+            } else {
+                document.getElementById('order-id').textContent = 'Unknown';
+                document.getElementById('order-details').innerHTML = `
+                    <div class="error-message">
+                        <strong>Order ID not found</strong>
+                        <p>Please check your email for order confirmation details.</p>
+                    </div>
+                `;
+            }
+        });
+    </script>
+</body>
+</html>
