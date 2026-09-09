@@ -33,6 +33,16 @@ namespace OmniIndex
 
         static int upload(const std::string filename, const std::string url, const std::string path, std::string user);
 
+        /**! POST a JSON body via libcurl (not a shell-out — safe against
+         * shell-injection from untrusted body/header content, unlike building a `curl ...`
+         * command string and running it through popen()).
+         * @param url - target URL
+         * @param json_body - raw request body, Content-Type: application/json
+         * @param extra_headers - additional header lines, e.g. "Authorization: Bearer ..."
+         * @return response body (empty string on transport failure — check Response_Code)
+         */
+        std::string post_json(std::string url, std::string json_body, std::vector<std::string> extra_headers = {});
+
     private:
         // static size_t payload_source(void *, size_t, size_t, void *);
         static size_t payload_source(void *, size_t, size_t, std::string *);

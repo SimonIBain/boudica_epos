@@ -142,12 +142,25 @@ class Postgresql {
      * @return const char* json string
     */
     const char* runCommand(std::string commandData);
-    
+
     /**! Method to run a query without passing back a result set
      * @param std::string query
      * @return int - 0 on success, 1 on error
     */
     int exec(std::string );
+
+    /**! Parameterized SELECT: sql uses $1, $2... placeholders, values bound out-of-band
+     * via libpq's PQexecParams (no string concatenation of caller-supplied values).
+     * @param std::string sql - query text with $1.. placeholders
+     * @param std::vector<std::string> params - values for each placeholder, in order
+     * @return const char* json string (caller owns the returned buffer; free() it)
+    */
+    const char* runCommandParams(std::string sql, const std::vector<std::string>& params);
+
+    /**! Parameterized INSERT/UPDATE/DELETE, see runCommandParams for binding rules.
+     * @return int - 0 on success, 1 on error
+    */
+    int execParams(std::string sql, const std::vector<std::string>& params);
     
     /**! Start a transaction
      * @return bool - true if transaction started successfully

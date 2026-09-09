@@ -1,10 +1,30 @@
 -- ===== DATABASE USER & SECURITY =====
-CREATE USER IF NOT EXISTS store WITH PASSWORD '';
+-- Standard PostgreSQL has no "CREATE USER IF NOT EXISTS" (unlike CREATE TABLE/INDEX) — the
+-- previous version of this file used that syntax and would fail outright against real
+-- Postgres. This is the idiomatic idempotent-role-creation pattern instead.
+-- No password is set here deliberately — a real password belongs in deployment-specific
+-- secrets/config, not committed schema DDL (this file used to hardcode one in plaintext).
+-- Set it once after running this file:  ALTER ROLE store WITH PASSWORD '...';
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'store') THEN
+        CREATE ROLE store WITH LOGIN;
+    END IF;
+END
+$$;
 GRANT CONNECT ON DATABASE postgres TO store;
 
 -- ===== REQUIRED EXTENSIONS =====
+-- Every extension is created up front. The previous version of this file created
+-- pg_trgm/fuzzystrmatch/uuid-ossp near the very end, but the products table below (created
+-- near the top) already indexes a column with gin_trgm_ops — that failed outright against
+-- real Postgres ("operator class gin_trgm_ops does not exist") since the extension didn't
+-- exist yet at the point it was first needed.
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE SCHEMA IF NOT EXISTS store;
 
@@ -106,6 +126,10 @@ CREATE TABLE store.stock_removal (
 );
 
 -- ===== SALES TRACKING =====
+-- Indexes declared with separate CREATE INDEX statements below, matching every other table
+-- in this file. The previous version used inline "INDEX idx_...(...)" clauses inside
+-- CREATE TABLE, which is MySQL syntax — invalid PostgreSQL DDL, and this table failed to
+-- create at all against real Postgres.
 CREATE TABLE store.period_sales (
     id SERIAL PRIMARY KEY,
     supplier TEXT REFERENCES store.suppliers(supplier),
@@ -114,11 +138,11 @@ CREATE TABLE store.period_sales (
     running_total NUMERIC,
     type TEXT,
     completed CHAR(1) DEFAULT '0',
-    sale_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    INDEX idx_period_sales_date (sale_date),
-    INDEX idx_period_sales_barcode (barcode)
+    sale_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX idx_period_sales_date ON store.period_sales(sale_date);
+CREATE INDEX idx_period_sales_barcode ON store.period_sales(barcode);
 
 -- ===== TILL OPERATIONS =====
 CREATE TABLE store.till_float (
@@ -293,10 +317,8 @@ ALTER TABLE store.logs OWNER TO store;
 GRANT ALL PRIVILEGES ON store.logs TO store;
 GRANT USAGE, SELECT ON SEQUENCE store.logs_id_seq TO store;
 
--- ===== ENABLE REQUIRED EXTENSIONS =====
-CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;   -- For semantic search
-CREATE EXTENSION IF NOT EXISTS pg_trgm;         -- For trigram similarity search
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";       -- For UUID support
+-- (fuzzystrmatch/pg_trgm/uuid-ossp are created up front near the top of this file, not
+-- here — see the "REQUIRED EXTENSIONS" section.)
 
 -- ===== SCHEMA OWNERSHIP =====
 ALTER SCHEMA store OWNER TO store;
@@ -306,3 +328,8 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA store TO store;
 
 -- Set users table ownership
 ALTER TABLE store.users OWNER TO store;
+-- ===== LOCAL/CONTAINER-ONLY: set the store role's password =====
+-- Not part of the canonical schema (code/sql/setup.sql intentionally ships no password —
+-- see the comment at the top of this file). This section only exists in the Docker-init
+-- copy, templated from the container's STORE_DB_PASSWORD env var.
+ALTER ROLE store WITH PASSWORD '${STORE_DB_PASSWORD}';

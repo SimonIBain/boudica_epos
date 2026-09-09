@@ -147,6 +147,43 @@ std::string Http::request(std::string url)
     return response;
 }
 
+std::string Http::post_json(std::string url, std::string json_body, std::vector<std::string> extra_headers)
+{
+    CURL *curl;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
+    std::string response;
+    Response_Code = 0;
+    if (curl)
+    {
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        for (const auto& h : extra_headers) {
+            headers = curl_slist_append(headers, h.c_str());
+        }
+
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long) json_body.size());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, payload_source);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+        res = curl_easy_perform(curl);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &Response_Code);
+        if (res != CURLE_OK) {
+            fprintf(stderr, "Http::post_json curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        }
+
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+    }
+    return response;
+}
+
 int Http::upload(const std::string filename, const std::string url
     , const std::string path, std::string user)
 {

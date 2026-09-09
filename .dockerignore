@@ -1,0 +1,7 @@
+**/.vscode
+**/build/
+**/*.o
+code/back_end/src/boudica_pos
+github/
+incedentals/
+.git/

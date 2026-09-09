@@ -21,6 +21,7 @@
 #include <compare>
 #include <regex>
 #include <cmath>
+#include <cctype>
 
 #include "includes/cryptography.h"
 #include "includes/environment.h"
@@ -39,32 +40,122 @@ const std::string UPLOAD_DIR = "uploads/";
 const std::string ALLOWED_EXTENSIONS[] = {".mp4", ".txt", ".pdf", ".jpg", ".png", ".doc", ".docx"};
 const int NUM_ALLOWED_EXTENSIONS = 6;
 
+// Escapes a string for embedding as a JSON string literal value (quotes, backslashes,
+// control characters). Needed because call_boudica() below builds its request body by
+// hand rather than through a JSON-writing library — without this, any stock/sales
+// description or supplier name containing a quote, backslash, or newline would produce an
+// invalid request body.
+static inline
+std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += (char) c;
+                }
+        }
+    }
+    return out;
+}
+
+// Defined further down (reads /usr/lib/cgi-bin/boudica_pos.conf, rendered from env vars by
+// docker/backend/entrypoint.sh at container start).
+static std::map<std::string, std::string> get_configuration();
+
 // ===== BOUDICA AI INTEGRATION =====
 static inline
-std::string call_boudica(std::string prompt) {
-    // Get Boudica server config from environment or defaults
-    const char* boudica_host = std::getenv("BOUDICA_HOST");
-    const char* boudica_port = std::getenv("BOUDICA_PORT");
-    const char* boudica_api_key = std::getenv("BOUDICA_API_KEY");
-    
-    std::string host = boudica_host ? boudica_host : "localhost";
-    std::string port = boudica_port ? boudica_port : "8080";
-    std::string api_key = boudica_api_key ? boudica_api_key : "";
-    
+std::string call_boudica(std::string message, int max_tokens = 800) {
+    // Boudica server config comes from boudica_pos.conf, not getenv() — CGI scripts run
+    // under mod_cgid do NOT inherit the server process's arbitrary OS/Docker environment
+    // variables (only PassEnv-listed ones would be forwarded, and none are configured
+    // here), so getenv("BOUDICA_HOST") etc. read back null/empty at request time even
+    // though the container's own environment has them set. Every other piece of runtime
+    // config in this codebase (DB host, admin credentials, Stripe key) already goes through
+    // this same config-file path for that reason — this follows suit.
+    std::map<std::string, std::string> conf = get_configuration();
+    std::string host = !conf["boudica_host"].empty() ? conf["boudica_host"] : "localhost";
+    std::string port = !conf["boudica_port"].empty() ? conf["boudica_port"] : "80";
+    std::string api_key = conf["boudica_api_key"];
+
     std::string url = "http://" + host + ":" + port + "/api/boudica/chat";
-    
-    // Build JSON payload
-    std::string payload = "{\"prompt\":\"" + prompt + "\"";
+
+    // Fixed: this used to send {"prompt": "..."} — the real Boudica /chat API's request
+    // field is "message", not "prompt" (see BOUDICA_API_DEVELOPER_GUIDE.md in the
+    // boudica_slm repo). With the wrong field name the server never actually saw the
+    // caller's text at all. Also switched off the popen()+shell curl approach (a real,
+    // reachable shell-injection RCE — the message text was interpolated straight into a
+    // shell command string) to a proper libcurl POST via Http::post_json(), and off manual
+    // JSON-body API-key embedding to the standard Authorization header.
+    std::string payload = "{\"message\":\"" + json_escape(message) + "\",\"max_tokens\":" + std::to_string(max_tokens) + "}";
+
+    std::vector<std::string> headers;
     if (!api_key.empty()) {
-        payload += ",\"api_key\":\"" + api_key + "\"";
+        headers.push_back("Authorization: Bearer " + api_key);
     }
-    payload += "}";
-    
-    // Use curl to send POST request
-    std::string cmd = "curl -s -X POST '" + url + "' -H 'Content-Type: application/json' -d '" + payload + "'";
-    
-    std::string resp = OmniIndex::Utils::Utils::exec(cmd);
-    return resp;
+
+    OmniIndex::Http http;
+    return http.post_json(url, payload, headers);
+}
+
+// Extracts one top-level JSON string field by name, respecting quote/escape boundaries
+// (unlike the general-purpose JSON<> parser in jsonobject.h, which splits on any comma or
+// colon it finds — including ones inside the string value itself). Needed because Boudica's
+// AI answers are free-form HTML/markdown text that routinely contains commas and colons
+// (list items like "Safety Stock Optimization:", parentheticals like "(e.g., ...)"), which
+// previously corrupted JSON<>'s parse and caused it to silently return "" for "response".
+static inline
+std::string extract_json_string_field(const std::string& json, const std::string& field) {
+    std::string needle = "\"" + field + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) { return ""; }
+    pos += needle.length();
+    while (pos < json.length() && std::isspace((unsigned char) json[pos])) { ++pos; }
+    if (pos >= json.length() || json[pos] != ':') { return ""; }
+    ++pos;
+    while (pos < json.length() && std::isspace((unsigned char) json[pos])) { ++pos; }
+    if (pos >= json.length() || json[pos] != '"') { return ""; }
+    ++pos;
+
+    std::string out;
+    while (pos < json.length() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.length()) {
+            char next = json[pos + 1];
+            switch (next) {
+                case 'n': out += '\n'; break;
+                case 'r': out += '\r'; break;
+                case 't': out += '\t'; break;
+                case '"': out += '"'; break;
+                case '\\': out += '\\'; break;
+                case '/': out += '/'; break;
+                default: out += next; break;
+            }
+            pos += 2;
+        } else {
+            out += json[pos];
+            ++pos;
+        }
+    }
+    return out;
+}
+
+// call_boudica() returns Boudica's full JSON reply (e.g. {"response": "...", "model":
+// ..., "tokens_generated": ..., ...}) — some callers (predict_daily_sales/weekly/monthly/
+// reorder_date) want that whole object embedded as-is; others just want the model's actual
+// answer text. This extracts just the "response" field for the latter.
+static inline
+std::string extract_boudica_response_text(const std::string& boudica_json) {
+    return extract_json_string_field(boudica_json, "response");
 }
 
 // Legacy Gemini function (deprecated, kept for compatibility)
@@ -145,7 +236,25 @@ std::string url_decode(std::string &req) {
     return (ret);
 }
 
-static inline 
+// Confirmed live (taxsummary crashed the whole CGI process with an uncaught
+// std::invalid_argument): std::stod()/std::stol() throw on empty or non-numeric input, and
+// a SQL aggregate (SUM/AVG) over zero matching rows, or the JSON parser's own "null" ->
+// placeholder handling, can hand back exactly that. Report functions in particular run
+// user-supplied date ranges against tables that are very plausibly empty (a fresh
+// install, or a range with no orders) — safe_stod/safe_stol never crash the process for it.
+static inline
+double safe_stod(const std::string& s, double def = 0.0) {
+    if ( s.empty() || s == "null" ) { return def; }
+    try { return std::stod(s); } catch (...) { return def; }
+}
+
+static inline
+long safe_stol(const std::string& s, long def = 0) {
+    if ( s.empty() || s == "null" ) { return def; }
+    try { return std::stol(s); } catch (...) { return def; }
+}
+
+static inline
 std::string clean_value(std::string value) {
     value = OmniIndex::Utils::Utils::replace(value, ",", " ");
     value = OmniIndex::Utils::Utils::replace(value, "\"", " ");
@@ -300,8 +409,41 @@ std::map<std::string, std::string> get_configuration() {
         }
         OmniIndex::Utils::Utils::trim(tmp);
         configuration["stripe_secret_key"]= tmp;
-    }                    
-    return configuration;     
+    }
+    tmp = conf;
+    sz_pos = tmp.find("\nboudica_host ");
+    if ( sz_pos != std::string::npos ) {
+        tmp.erase(0, sz_pos + 14);
+        sz_pos = tmp.find("\n");
+        if ( sz_pos != std::string::npos ) {
+            tmp.erase ( sz_pos );
+        }
+        OmniIndex::Utils::Utils::trim(tmp);
+        configuration["boudica_host"]= tmp;
+    }
+    tmp = conf;
+    sz_pos = tmp.find("\nboudica_port ");
+    if ( sz_pos != std::string::npos ) {
+        tmp.erase(0, sz_pos + 14);
+        sz_pos = tmp.find("\n");
+        if ( sz_pos != std::string::npos ) {
+            tmp.erase ( sz_pos );
+        }
+        OmniIndex::Utils::Utils::trim(tmp);
+        configuration["boudica_port"]= tmp;
+    }
+    tmp = conf;
+    sz_pos = tmp.find("\nboudica_api_key ");
+    if ( sz_pos != std::string::npos ) {
+        tmp.erase(0, sz_pos + 17);
+        sz_pos = tmp.find("\n");
+        if ( sz_pos != std::string::npos ) {
+            tmp.erase ( sz_pos );
+        }
+        OmniIndex::Utils::Utils::trim(tmp);
+        configuration["boudica_api_key"]= tmp;
+    }
+    return configuration;
 }
 
 
@@ -369,17 +511,17 @@ static inline
 std::string check_user_credentials(std::string email_address, std::string password) {
     std::string user = email_address, domain = email_address, db_user = email_address;
     std::map<std::string, std::string> conf = get_configuration();    
-    Postgresql pgbc = Postgresql(conf["username"], conf["password"] , conf["server"], conf["port"], "postgres" ); 
+    Postgresql pgbc = Postgresql(conf["username"], conf["password"] , conf["server"], conf["port"], "postgres" );
     if ( pgbc._isConnected ) {
-        // Query new store.users table with password verification using pgcrypto
+        // Query new store.users table with password verification using pgcrypto.
+        // Fixed: this used to build the WHERE clause by concatenating the caller-supplied
+        // username/password directly into the SQL text — a pre-auth SQL injection point,
+        // since this function gates every single command.
         std::string sql = "SELECT id, username, email, role, full_name, is_active FROM store.users "
-                         "WHERE username = '" + email_address + "' AND is_active = true "
-                         "AND password_hash = crypt('" + password + "', password_hash);";
+                         "WHERE username = $1 AND is_active = true "
+                         "AND password_hash = crypt($2, password_hash)";
 
-        #ifdef DEBUG
-        std::cout << sql << "\n\n";
-        #endif
-        std::string resp(pgbc.runCommand(sql));
+        std::string resp(pgbc.runCommandParams(sql, {email_address, password}));
         std::string warnings = pgbc.getWarnings();
         std::string error = pgbc.getLastError();
         pgbc.close(); 
@@ -443,63 +585,60 @@ static inline
 bool add_product(std::string supplier, const std::string barcode, const std::string rs_price, std::string description,
   const std::string user, const std::string password, const std::string database) {
     //supplierencrypt TEXT, product_description TEXT, rs_price NUMERIC,barcode TEXT
-    description = clean_value(description); 
-    supplier = clean_value(supplier);   
-    std::string sql = "SELECT barcode, supplier, product_description FROM store.products WHERE supplier = '" + supplier + "' AND product_description = '" + description + "' ;";  
+    description = clean_value(description);
+    supplier = clean_value(supplier);
+    std::string sql = "SELECT barcode, supplier, product_description FROM store.products WHERE supplier = $1 AND product_description = $2";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
-    
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+
     if ( pgbc._isConnected ) {
         std::string error, warning;
-        std::string resp(pgbc.runCommand(sql));
+        std::string resp(pgbc.runCommandParams(sql, {supplier, description}));
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != ""  ) {
-            return false;
-        }
-        pgbc.close();
-        JSON<std::string,std::string> jSupplier(resp);
-        /** If we have this without a barcode we will deleet the original. */
-        if ( jSupplier["supplier"] != "" && jSupplier["supplier"] != "null"  ) {
-            sql = "DELETE FROM store.products WHERE barcode = '" + barcode + "';";
-            Postgresql _pgbc = Postgresql( m_conf["username"], m_conf["password"], m_conf["server"], m_conf["port"], database ); 
-            if ( _pgbc._isConnected ) {
-                _pgbc.exec(sql);
-            }
-            _pgbc.close();
-        }
-        pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
-        sql = "INSERT INTO store.products (supplier, product_description, rs_price, barcode) VALUES ('" + supplier + "','" + description + "'," + rs_price + ",'" + barcode + "');";  
-        int i_resp = pgbc.exec(sql);
-        if ( i_resp != 0 ) {
             pgbc.close();
             return false;
         }
+        JSON<std::string,std::string> jSupplier(resp);
+        /** If we have this without a barcode we will deleet the original. */
+        if ( jSupplier["supplier"] != "" && jSupplier["supplier"] != "null"  ) {
+            int del_resp = pgbc.execParams("DELETE FROM store.products WHERE barcode = $1", {barcode});
+            if ( del_resp != 0 ) {
+                pgbc.close();
+                return false;
+            }
+        }
+        sql = "INSERT INTO store.products (supplier, product_description, rs_price, barcode) VALUES ($1, $2, $3, $4)";
+        int i_resp = pgbc.execParams(sql, {supplier, description, rs_price, barcode});
         pgbc.close();
+        if ( i_resp != 0 ) {
+            return false;
+        }
         return true;
     }
     return false;
-} 
+}
 
 static inline
 bool add_supplier(std::string supplier, std::string telephone, std::string address, const std::string postcode, const std::string supplier_email,
     const std::string user, const std::string password, const std::string database) {
     //store.suppliers (supplierencrypt TEXT, telephoneencrypt TEXT, addressencrypt TEXT, postcode TEXT);
-    supplier = clean_value(supplier);  
-    telephone = clean_value(telephone);  
-    address = clean_value(address); 
-    std::string sql = "INSERT INTO store.suppliers (supplier, telephone, address, postcode, emailaddress) VALUES ('" + supplier + "','" + telephone + "','" + address + "','" + postcode + "','" + supplier_email + "');";  
+    supplier = clean_value(supplier);
+    telephone = clean_value(telephone);
+    address = clean_value(address);
+    std::string sql = "INSERT INTO store.suppliers (supplier, telephone, address, postcode, emailaddress) VALUES ($1, $2, $3, $4, $5)";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning, resp;
-        int i_resp = pgbc.exec(sql);
+        int i_resp = pgbc.execParams(sql, {supplier, telephone, address, postcode, supplier_email});
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" || i_resp != 0 ) {
@@ -617,22 +756,22 @@ static inline
 bool add_invoice(std::string invoice_number, std::string supplier, std::string details, std::string amount, bool paid, 
     const std::string user, const std::string password, const std::string database) {
     //CREATE BLOCK store.suppliers_invoices (supplierencrypt TEXT, invoice_number TEXT, invoice_details TEXT, invoice_amout NUMERIC, paid_on TEXT);    
-    supplier = clean_value(supplier);  
-    invoice_number = clean_value(invoice_number);  
-    details = clean_value(details); 
+    supplier = clean_value(supplier);
+    invoice_number = clean_value(invoice_number);
+    details = clean_value(details);
     std::string date = OmniIndex::Utils::Utils::getCurrentUTCTime();
     if ( !paid ) {
         date = "";
     }
-    std::string sql = "INSERT INTO store.suppliers_invoices (supplier, invoice_number, invoice_details, invoice_amount, paid_on) VALUES ('" + supplier + "','" + invoice_number + "','" + details + "','" + amount + "','" + date + "');";  
+    std::string sql = "INSERT INTO store.suppliers_invoices (supplier, invoice_number, invoice_details, invoice_amount, paid_on) VALUES ($1, $2, $3, $4, $5)";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning, resp;
-        int i_resp = pgbc.exec(sql);
+        int i_resp = pgbc.execParams(sql, {supplier, invoice_number, details, amount, date});
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" || i_resp != 0 ) {
@@ -648,15 +787,15 @@ bool add_invoice(std::string invoice_number, std::string supplier, std::string d
 /** Day routines  */
 static inline
 bool set_float(std::string open_float, const std::string user, const std::string password, const std::string database) {
-    std::string sql = "INSERT INTO store.till_float (cash_float) VALUES (" + open_float + ");";
+    std::string sql = "INSERT INTO store.till_float (cash_float) VALUES ($1)";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning;
-        int i_resp = pgbc.exec(sql);
+        int i_resp = pgbc.execParams(sql, {open_float});
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" || i_resp != 0 ) {
@@ -681,7 +820,7 @@ std::string cash_up(const std::string user, const std::string password, const st
     if ( m_conf.empty() ) {
         return "{\"error\": \"System error confoigutaion file is missing!\"}";
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         double card_sales = 0.00, cash_sales = 0.00, unnacounted_sales = 0.00;
         std::string error, warning, resp;
@@ -692,13 +831,15 @@ std::string cash_up(const std::string user, const std::string password, const st
             pgbc.close();
             return "{\"error\": \"" + error +"\"}";
         }
-        pgbc.close();
         std::map<std::string, std::map<std::string, std::string> > m_totals;
         resp = OmniIndex::Utils::Utils::replace(resp, "{{", "{");
         std::string response = "{";
         bool first_item = true;
+        // The whole settlement (marking every period_sales row completed=0, then recording
+        // the cash_up row) is one financial operation — it must not partially apply.
+        pgbc.beginTransaction();
+        bool txn_failed = false;
         for ( size_t sz_start = resp.find("{"); sz_start != std::string::npos; sz_start = resp.find("{") ) {
-            pgbc = Postgresql( m_conf["username"], m_conf["password"], m_conf["server"], m_conf["port"], database ); 
             resp.erase ( 0, sz_start + 1);
             size_t sz_end = resp.find("}");
             if ( sz_end != std::string::npos ) {
@@ -707,15 +848,13 @@ std::string cash_up(const std::string user, const std::string password, const st
                 JSON<std::string,std::string> jProduct(tmp);
                 /** Make sure that the object we are dealing with is older thanthe last update */
                 if ( jProduct["completed"] == "1" ) {
-                    sql = "UPDATE store.period_sales SET completed = '0' WHERE barcode = '" + jProduct["barcode"] + "';";
-                     int i = pgbc.exec(sql);
-                     warning = pgbc.getWarnings();
-                     error = pgbc.getLastError();
-                     if ( i > 0  ) {
-                         //pgbc.close();
-                        // return "{\"error\": \"" + error +"\"}";
-                     }
-                    std::string sale_type = jProduct["type"]; 
+                    int i = pgbc.execParams(
+                        "UPDATE store.period_sales SET completed = '0' WHERE barcode = $1",
+                        {jProduct["barcode"]});
+                    if ( i != 0 ) {
+                        txn_failed = true;
+                    }
+                    std::string sale_type = jProduct["type"];
                     OmniIndex::Utils::Utils::toLower(sale_type);
                     if ( sale_type == "cash" ) {
                         cash_sales += std::stod(jProduct["running_total"]);
@@ -724,25 +863,38 @@ std::string cash_up(const std::string user, const std::string password, const st
                     } else {
                         cash_sales += std::stod(jProduct["running_total"]);
                     }
-                }              
+                }
             }
-            pgbc.close();
         }
-        pgbc.close();
-        sql = "SELECT cash_float FROM store.till_float ORDER BY float_date DESC LIMIT 1;";
-        pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
-        resp.assign(pgbc.runCommand(sql));
+        if ( txn_failed ) {
+            pgbc.rollbackTransaction();
+            pgbc.close();
+            return "{\"error\": \"Cashup failed while updating period sales; no changes were committed.\"}";
+        }
+        resp.assign(pgbc.runCommand("SELECT cash_float FROM store.till_float ORDER BY float_date DESC LIMIT 1;"));
         JSON<std::string,std::string> jFloat(resp);
-        long day_float = std::stod(jFloat["cash_float"]);
+        // Fixed: std::stod() on an empty string throws std::invalid_argument, uncaught —
+        // this crashed the whole CGI process (confirmed live: an HTTP 200 with an empty
+        // body, since headers were already flushed before the crash) whenever cashup ran
+        // with no till_float row ever set (e.g. a fresh install, before anyone runs
+        // setfloat). Defaults to 0 instead, same as every other "empty result" case in
+        // this file.
+        std::string float_str = jFloat["cash_float"];
+        long day_float = float_str.empty() ? 0 : (long) std::stod(float_str);
         long amount_since_last_close = (card_sales + cash_sales) - day_float;
-        sql = "INSERT INTO store.cash_up (cash_float, takings, cash_sales, card_sales) VALUES (" + std::to_string(day_float) + "," + std::to_string(amount_since_last_close) + "," + std::to_string(cash_sales) + "," + std::to_string(std::round(card_sales*100)/100) + ");";
-        
-        int i_resp = pgbc.exec(sql);
-        warning = pgbc.getWarnings();
-        error = pgbc.getLastError();
+        int i_resp = pgbc.execParams(
+            "INSERT INTO store.cash_up (cash_float, takings, cash_sales, card_sales) VALUES ($1, $2, $3, $4)",
+            {std::to_string(day_float), std::to_string(amount_since_last_close),
+             std::to_string(cash_sales), std::to_string(std::round(card_sales*100)/100)});
+        if ( i_resp != 0 ) {
+            pgbc.rollbackTransaction();
+            pgbc.close();
+            return "{\"error\": \"Cashup failed while recording the cash_up total; no changes were committed.\"}";
+        }
+        pgbc.commitTransaction();
         pgbc.close();
-        
-        return response + "\"total\": \"" + std::to_string(amount_since_last_close) + "\", \"card_sales\": \"" + std::to_string(std::round(card_sales*100)/100) + "\", \"cash_sales\": \"" + std::to_string(std::round(cash_sales*100)/100) + "\"}\n\n";        
+
+        return response + "\"total\": \"" + std::to_string(amount_since_last_close) + "\", \"card_sales\": \"" + std::to_string(std::round(card_sales*100)/100) + "\", \"cash_sales\": \"" + std::to_string(std::round(cash_sales*100)/100) + "\"}\n\n";
     } else {
         return "{\"total\": \"Undetermined\", \"card_sales\": \"Undetermined\", \"cash_sales\": \"undetermined\", \"unnacounted_sales\": \"undetermined\"}\n\n";    
     }
@@ -753,16 +905,15 @@ std::string cash_up(const std::string user, const std::string password, const st
 static inline
 bool update_stock(const std::string barcode, std::string quantity,
   const std::string user, const std::string password, const std::string database) {
-    std::string stock_take = "DELETE FROM store.stock_take WHERE barcode = '" + barcode + "';";/** Clean up no need for a Web 3 thngnymagig here */
-    std::string sql = "SELECT quantity, available FROM store.stock WHERE barcode = '" + barcode + "' LIMIT 1;";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning;
-        std::string resp(pgbc.runCommand(sql));
+        std::string resp(pgbc.runCommandParams(
+            "SELECT quantity, available FROM store.stock WHERE barcode = $1 LIMIT 1", {barcode}));
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" ) {
@@ -772,70 +923,59 @@ bool update_stock(const std::string barcode, std::string quantity,
         JSON<std::string,std::string> jStock(resp);
         std::string current_qty = jStock["quantity"];
         OmniIndex::Utils::Utils::trim(current_qty);
-        size_t sz_len = current_qty.length();
-        if ( current_qty.length() < 1 ) {
-            current_qty = "0";
-        }
-        /** Are we adding or subtracting? */
-        long total_quantity = 0;
-        std::string tmp = quantity;
-
-        if ( tmp.find("-") != std::string::npos ) {
-            tmp.erase ( 0, 1);
-            total_quantity = std::stol(current_qty) - std::stol(tmp);
-        } else {
-            total_quantity = std::stol(current_qty) + std::stol(quantity);
-        }
-        std::string current_ava = jStock["quantity"];
+        if ( current_qty.length() < 1 ) { current_qty = "0"; }
+        // Fixed: this used to read jStock["quantity"] again instead of jStock["available"],
+        // silently corrupting the "available to sell" figure on every stock movement.
+        std::string current_ava = jStock["available"];
         OmniIndex::Utils::Utils::trim(current_ava);
-        sz_len = current_ava.length();
-        if ( current_ava.length() < 1 ) {
-            current_ava = "0";
-        }
-        /** Are we adding or subtracting? */
-        long total_available = 0;
+        if ( current_ava.length() < 1 ) { current_ava = "0"; }
 
-        if ( quantity.find("-") != std::string::npos ) {
-            quantity.erase ( 0, 1);
-            total_quantity = std::stol(current_ava) - std::stol(quantity);
-        } else {
-            total_available = std::stol(current_ava) + std::stol(quantity);
-        }
-        pgbc.close();
-        pgbc = Postgresql( m_conf["username"], m_conf["password"], m_conf["server"], m_conf["port"], database ); 
-        if ( pgbc._isConnected ) {
-            std::string error, warning;
-            pgbc.runCommand(stock_take);
-        }
-        pgbc.close();
-        pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );         
-        sql = "INSERT INTO store.stock (quantity,  available, barcode) VALUES (" + std::to_string(total_quantity) + "," + std::to_string(total_available) + ",'" + barcode + "');";
-        int i_resp = pgbc.exec(sql);
-        warning = pgbc.getWarnings();
+        /** quantity is a signed delta: "-3" to remove 3 units, "5" to add 5. Applied to
+         * both the total owned (quantity) and the sellable count (available). */
+        bool is_removal = (quantity.find("-") != std::string::npos);
+        std::string delta = quantity;
+        if ( is_removal ) { delta.erase(0, 1); }
+        long total_quantity = is_removal
+            ? std::stol(current_qty) - std::stol(delta)
+            : std::stol(current_qty) + std::stol(delta);
+        long total_available = is_removal
+            ? std::stol(current_ava) - std::stol(delta)
+            : std::stol(current_ava) + std::stol(delta);
+
+        pgbc.execParams("DELETE FROM store.stock_take WHERE barcode = $1", {barcode});
+        /** Clean up no need for a Web 3 thngnymagig here */
+
+        // Fixed: this used to be a plain INSERT, which fails outright with a duplicate-key
+        // error for every barcode that already has a stock row (barcode is UNIQUE) — i.e.
+        // every stock movement after a product's very first stock entry. ON CONFLICT makes
+        // this a real upsert.
+        int i_resp = pgbc.execParams(
+            "INSERT INTO store.stock (barcode, quantity, available) VALUES ($1, $2, $3) "
+            "ON CONFLICT (barcode) DO UPDATE SET "
+            "quantity = EXCLUDED.quantity, available = EXCLUDED.available, last_checked = CURRENT_TIMESTAMP",
+            {barcode, std::to_string(total_quantity), std::to_string(total_available)});
         error = pgbc.getLastError();
-        if ( error != "" || i_resp != 0 ) {
-            pgbc.close();
+        pgbc.close();
+        if ( i_resp != 0 ) {
             return false;
         }
-        pgbc.close(); 
         return true;
     }
     return false;
-} 
+}
 
 static inline
 bool move_stock_out(const std::string supplier,const std::string barcode, std::string quantity, std::string reason,
   const std::string user, const std::string password, const std::string database) {
-    std::string sql = "SELECT quantity, available FROM store.stock WHERE barcode = '" + barcode + "';";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning;
-        std::string resp(pgbc.runCommand(sql));
-        warning = pgbc.getWarnings();
+        std::string resp(pgbc.runCommandParams(
+            "SELECT quantity, available FROM store.stock WHERE barcode = $1", {barcode}));
         error = pgbc.getLastError();
         if ( error != "" ) {
             pgbc.close();
@@ -844,59 +984,53 @@ bool move_stock_out(const std::string supplier,const std::string barcode, std::s
         JSON<std::string,std::string> jStock(resp);
         std::string current_qty = jStock["quantity"];
         OmniIndex::Utils::Utils::trim(current_qty);
-        size_t sz_len = current_qty.length();
-        if ( current_qty.length() < 1 ) {
-            current_qty = "0";
-        }
-        /** Are we adding or subtracting? */
-        long total_quantity = 0;
-        total_quantity = std::stol(current_qty);
+        if ( current_qty.length() < 1 ) { current_qty = "0"; }
+        long total_quantity = std::stol(current_qty);
 
         std::string current_ava = jStock["available"];
         OmniIndex::Utils::Utils::trim(current_ava);
-        sz_len = current_ava.length();
-        if ( current_ava.length() < 1 ) {
-            current_ava = "0";
-        }
-        /** Are we adding or subtracting? */
-        long total_available = 0;
-        total_available = std::stol(current_ava) - std::stol(quantity);
+        if ( current_ava.length() < 1 ) { current_ava = "0"; }
+        long total_available = std::stol(current_ava) - std::stol(quantity);
 
-        sql = "INSERT INTO store.stock_removal (quantity, barcode, reason) VALUES (" + std::to_string(total_quantity) + ",'" + barcode + "','" + reason + "');";
-        int i_resp = pgbc.exec(sql);
-        warning = pgbc.getWarnings();
+        // stock_removal row + the stock upsert belong together as one operation.
+        pgbc.beginTransaction();
+        int i_resp = pgbc.execParams(
+            "INSERT INTO store.stock_removal (quantity, barcode, reason) VALUES ($1, $2, $3)",
+            {std::to_string(total_quantity), barcode, reason});
+        if ( i_resp == 0 ) {
+            // Fixed: this used to be a plain INSERT into store.stock, which fails with a
+            // duplicate-key error for any barcode that already has a stock row.
+            i_resp = pgbc.execParams(
+                "INSERT INTO store.stock (barcode, quantity, available) VALUES ($1, $2, $3) "
+                "ON CONFLICT (barcode) DO UPDATE SET "
+                "quantity = EXCLUDED.quantity, available = EXCLUDED.available, last_checked = CURRENT_TIMESTAMP",
+                {barcode, std::to_string(total_quantity), std::to_string(total_available)});
+        }
         error = pgbc.getLastError();
-        if ( error != "" || i_resp != 0 ) {
+        if ( i_resp != 0 ) {
+            pgbc.rollbackTransaction();
             pgbc.close();
             return false;
-        } 
-        sql = "INSERT INTO store.stock (quantity,  available, barcode) VALUES ('" + std::to_string(total_quantity) + "," + std::to_string(total_available) + ",'" + barcode + "');";
-        i_resp = pgbc.exec(sql);
-        warning = pgbc.getWarnings();
-        error = pgbc.getLastError();
-        if ( error != "" || i_resp != 0 ) {
-            pgbc.close();
-            return false;
-        } 
-        pgbc.close();        
+        }
+        pgbc.commitTransaction();
+        pgbc.close();
         return true;
     }
-    return false;  
+    return false;
 }
 
 static inline
 bool move_stock_in(const std::string supplier,const std::string barcode, std::string quantity, std::string reason,
   const std::string user, const std::string password, const std::string database) {
-    std::string sql = "SELECT quantity, available FROM store.stock WHERE barcode = '" + barcode + "';";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning;
-        std::string resp(pgbc.runCommand(sql));
-        warning = pgbc.getWarnings();
+        std::string resp(pgbc.runCommandParams(
+            "SELECT quantity, available FROM store.stock WHERE barcode = $1", {barcode}));
         error = pgbc.getLastError();
         if ( error != "" ) {
             pgbc.close();
@@ -905,44 +1039,37 @@ bool move_stock_in(const std::string supplier,const std::string barcode, std::st
         JSON<std::string,std::string> jStock(resp);
         std::string current_qty = jStock["quantity"];
         OmniIndex::Utils::Utils::trim(current_qty);
-        size_t sz_len = current_qty.length();
-        if ( current_qty.length() < 1 ) {
-            current_qty = "0";
-        }
-        /** Are we adding or subtracting? */
-        long total_quantity = 0;
-        total_quantity = std::stol(current_qty);
+        if ( current_qty.length() < 1 ) { current_qty = "0"; }
+        long total_quantity = std::stol(current_qty);
 
         std::string current_ava = jStock["available"];
         OmniIndex::Utils::Utils::trim(current_ava);
-        sz_len = current_ava.length();
-        if ( current_ava.length() < 1 ) {
-            current_ava = "0";
-        }
-        /** Are we adding or subtracting? */
-        long total_available = 0;
-        total_available = std::stol(current_ava) + std::stol(quantity);
+        if ( current_ava.length() < 1 ) { current_ava = "0"; }
+        long total_available = std::stol(current_ava) + std::stol(quantity);
 
-        sql = "INSERT INTO store.stock_removal (returned_quantity, barcode, reason) VALUES (" + std::to_string(total_quantity) + "','" + barcode + "','" + reason + "');";
-        int i_resp = pgbc.exec(sql);
-        warning = pgbc.getWarnings();
+        pgbc.beginTransaction();
+        int i_resp = pgbc.execParams(
+            "INSERT INTO store.stock_removal (returned_quantity, barcode, reason) VALUES ($1, $2, $3)",
+            {std::to_string(total_quantity), barcode, reason});
+        if ( i_resp == 0 ) {
+            // Fixed: same plain-INSERT-vs-upsert bug as move_stock_out above.
+            i_resp = pgbc.execParams(
+                "INSERT INTO store.stock (barcode, quantity, available) VALUES ($1, $2, $3) "
+                "ON CONFLICT (barcode) DO UPDATE SET "
+                "quantity = EXCLUDED.quantity, available = EXCLUDED.available, last_checked = CURRENT_TIMESTAMP",
+                {barcode, std::to_string(total_quantity), std::to_string(total_available)});
+        }
         error = pgbc.getLastError();
-        if ( error != "" || i_resp != 0 ) {
+        if ( i_resp != 0 ) {
+            pgbc.rollbackTransaction();
             pgbc.close();
             return false;
-        } 
-        sql = "INSERT INTO store.stock (quantity,  available, barcode) VALUES ('" + std::to_string(total_quantity) + "," + std::to_string(total_available) + ",'" + barcode + "');";
-        i_resp = pgbc.exec(sql);
-        warning = pgbc.getWarnings();
-        error = pgbc.getLastError();
-        if ( error != "" || i_resp != 0 ) {
-            pgbc.close();
-            return false;
-        } 
-        pgbc.close();        
+        }
+        pgbc.commitTransaction();
+        pgbc.close();
         return true;
     }
-    return false;  
+    return false;
 }
 
 /** Sales routines */
@@ -952,27 +1079,34 @@ bool update_sale(const std::string bar_code, const std::string rs_price, std::st
    const std::string user, const std::string password, const std::string database) {
     //shop.period_sales (supplierencrypt TEXT, rs_price NUMERIC, quantity NUMERIC, barcode TEXT, type, TEXT, completed char(1));
     //shop.products (supplierencrypt TEXT, product_description TEXT, rs_price NUMERIC,barcode TEXT);
+    // Fixed (confirmed live: sellitem reported success but stock never actually
+    // decremented): the `quantity` parameter — the number of units THIS sale is for — used
+    // to get overwritten below with the previous period_sales row's stored quantity before
+    // being handed to update_stock(), so every sale adjusted stock by the *previous*
+    // cumulative count (or by "0" on a product's first-ever sale) instead of by the units
+    // actually sold. sale_quantity keeps the real per-sale figure for that stock decrement,
+    // independent of how the period_sales running total is accumulated below.
+    const std::string sale_quantity = quantity;
     /** First we need to know who the supplier is */
-    std::string sql = "SELECT supplier FROM store.products WHERE barcode = '" + bar_code + "';";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning, resp;
-        resp.assign(pgbc.runCommand(sql));
-        warning = pgbc.getWarnings();
+        resp.assign(pgbc.runCommandParams(
+            "SELECT supplier FROM store.products WHERE barcode = $1", {bar_code}));
         error = pgbc.getLastError();
         if ( error != "" ) {
             pgbc.close();
             return false;
         }
         JSON<std::string,std::string> jSupplier(resp);
-        std::string supplier = jSupplier["supplier"];  
-        sql = "SELECT quantity, running_total, completed FROM store.period_sales WHERE barcode = '" + bar_code + "' ORDER BY sale_date DESC LIMIT 1;";  
-        resp.assign(pgbc.runCommand(sql));
-        warning = pgbc.getWarnings();
+        std::string supplier = jSupplier["supplier"];
+        resp.assign(pgbc.runCommandParams(
+            "SELECT quantity, running_total, completed FROM store.period_sales WHERE barcode = $1 ORDER BY sale_date DESC LIMIT 1",
+            {bar_code}));
         error = pgbc.getLastError();
         if ( error != "" ) {
             pgbc.close();
@@ -981,56 +1115,54 @@ bool update_sale(const std::string bar_code, const std::string rs_price, std::st
         JSON<std::string,std::string> jProduct(resp);
         long total_quantity = 0;
         double total_rs_price = 0.00;
-        if ( jProduct["completed"] == "0") {
-            total_quantity = 0;
-            total_rs_price = 0.00;
-        } else {
+        // completed == "0" means the most recent period for this barcode was already
+        // closed out by cashup — this sale starts a fresh accumulation period from zero.
+        // Any other value (completed == "1" still open, or "" — no prior row at all)
+        // continues accumulating onto the existing running total.
+        // Fixed: the completed == "0" case used to reset these counters and then do
+        // nothing else — falling through to `return false` below without ever inserting a
+        // row, so a sale of a barcode whose latest row was already closed out by cashup was
+        // silently rejected. Now shares the same accumulate-and-insert path as any other
+        // sale, just starting from a zero baseline instead of the previous row's totals.
+        if ( jProduct["completed"] != "0") {
             std::string tmp = jProduct["quantity"];
             OmniIndex::Utils::Utils::trim(tmp);
-            if ( tmp.length() <= 0 ) {
-                quantity = "0";
-            } else{
-                quantity = tmp;
+            if ( tmp.length() > 0 ) {
+                total_quantity = std::stol(tmp);
             }
             std::string tmp2 = jProduct["running_total"];
             OmniIndex::Utils::Utils::trim(tmp2);
-            if ( tmp2.length() <= 0 ) {
-                tmp2 = "0.00";
-            }        
-            // total_quantity = std::stol(tmp);
-            total_quantity += std::stol(quantity);
-            total_rs_price = std::stod(tmp2);
-            total_rs_price += std::stod(rs_price);
-            total_rs_price = std::round(total_rs_price*100)/100;
-            /** Now update it all */
-            if ( supplier == "" || supplier == "null" ) {
-                supplier = "UNKNOWN";
+            if ( tmp2.length() > 0 ) {
+                total_rs_price = std::stod(tmp2);
             }
-            sql = "INSERT INTO store.period_sales (supplier, running_total, quantity, barcode, type, completed) VALUES ('" + supplier + "," + std::to_string(total_rs_price) + "," + std::to_string(total_quantity) + ",'" + bar_code + "','" + type + "','1');";
+        }
+        total_quantity += std::stol(sale_quantity);
+        total_rs_price += std::stod(rs_price);
+        total_rs_price = std::round(total_rs_price*100)/100;
+        /** Now update it all */
+        if ( supplier == "" || supplier == "null" ) {
+            supplier = "UNKNOWN";
+        }
+        // Closing off any still-open prior row and inserting the new running-total
+        // row belong together as one operation.
+        pgbc.beginTransaction();
+        int i_resp = pgbc.execParams(
+            "UPDATE store.period_sales SET completed='0' WHERE barcode = $1", {bar_code});
+        if ( i_resp == 0 ) {
+            i_resp = pgbc.execParams(
+                "INSERT INTO store.period_sales (supplier, running_total, quantity, barcode, type, completed) "
+                "VALUES ($1, $2, $3, $4, $5, '1')",
+                {supplier, std::to_string(total_rs_price), std::to_string(total_quantity), bar_code, type});
+        }
+        error = pgbc.getLastError();
+        if ( i_resp != 0 ) {
+            pgbc.rollbackTransaction();
             pgbc.close();
-            pgbc = Postgresql( m_conf["username"], m_conf["password"], m_conf["server"], m_conf["port"], database ); 
-            std::string up_sql = "UPDATE store.period_sales SET completed='0' WHERE barcode = '" + bar_code + "';";
-            int i_resp = pgbc.exec(up_sql);
-            warning = pgbc.getWarnings();
-            error = pgbc.getLastError();
-            // if ( error != "" || i_resp != 0 ) {
-            //     pgbc.close();
-            //     return false;
-            // }
-            pgbc.close();
-            pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
-            i_resp = pgbc.exec(sql);
-            warning = pgbc.getWarnings();
-            error = pgbc.getLastError();
-             if ( error != "" || i_resp != 0 ) {
-                 pgbc.close();
-             }   
-            quantity = "-" + quantity;
-            if ( update_stock(bar_code, quantity, user, password, database)) {
-                return true;
-            }
             return false;
-        }                   
+        }
+        pgbc.commitTransaction();
+        pgbc.close();
+        return update_stock(bar_code, "-" + sale_quantity, user, password, database);
     } else {
         return false;
     }
@@ -1038,17 +1170,17 @@ bool update_sale(const std::string bar_code, const std::string rs_price, std::st
 }
 
 static inline
-std::string get_price(const std::string barcde, const std::string user, 
+std::string get_price(const std::string barcde, const std::string user,
   const std::string password, const std::string database) {
-    std::string sql = "SELECT rs_price FROM store.products WHERE barcode = '" + barcde + "';";
+    std::string sql = "SELECT rs_price FROM store.products WHERE barcode = $1";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return "{\"error\": \"System error configutaion file is missing!\"}";
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning, resp;
-        resp.assign(pgbc.runCommand(sql));
+        resp.assign(pgbc.runCommandParams(sql, {barcde}));
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" ) {
@@ -1077,45 +1209,51 @@ std::string get_details(std::string barcode, const std::string user,
     OmniIndex::Utils::Utils::trim(description);
     //description = OmniIndex::Utils::Utils::replace(description, " ", "%");
     std::vector<std::string> descriptions = create_search_strings(description);
+    // Build "p.product_description ILIKE $N" clauses with the wildcard baked into each
+    // bound parameter value (not the SQL text) — $1 is always p.barcode.
     std::string search_ranges = "";
+    std::vector<std::string> params = {barcode};
     for ( size_t pos = 0; pos < descriptions.size(); ++pos) {
-        search_ranges +=  " OR p.product_description ILIKE '%" + descriptions[pos] + "%'";
+        params.push_back("%" + descriptions[pos] + "%");
+        search_ranges +=  " OR p.product_description ILIKE $" + std::to_string(params.size());
     }
-    std::string sql = "SELECT p.rs_price, s.quantity, s.available, s.barcode, p.supplier, p.product_description, p.color, p.type FROM store.stock AS s INNER JOIN store.products AS p ON s.barcode = p.barcode WHERE p.barcode = '" + barcode + "' ";
-    sql += search_ranges + " ORDER BY p.modified_date DESC;";
+    std::string sql = "SELECT p.rs_price, s.quantity, s.available, s.barcode, p.supplier, p.product_description, p.color, p.type FROM store.stock AS s INNER JOIN store.products AS p ON s.barcode = p.barcode WHERE p.barcode = $1 ";
+    sql += search_ranges + " ORDER BY p.updated_at DESC;";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return "{\"error\": \"System error confoigutaion file is missing!\"}";
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning, resp;
-        resp.assign(pgbc.runCommand(sql));
+        resp.assign(pgbc.runCommandParams(sql, params));
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" ) {
             pgbc.close();
             return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
         }
-        
+
         JSON<std::string,std::string> jSupplier(resp);
-        std::string rs_price = jSupplier["rs_price"]; 
+        std::string rs_price = jSupplier["rs_price"];
         OmniIndex::Utils::Utils::trim(rs_price);
         /** This may not be an actual stock item. In wihich case */
         if ( rs_price == "" ) {
             search_ranges = "";
+            std::vector<std::string> params2 = {barcode};
             for ( size_t pos = 0; pos < descriptions.size(); ++pos) {
+                params2.push_back("%" + descriptions[pos] + "%");
                 if ( pos == 0 ) {
-                     search_ranges +=  " product_description ILIKE '%" + descriptions[pos] + "%'";
+                     search_ranges +=  " product_description ILIKE $" + std::to_string(params2.size());
                 } else {
-                     search_ranges +=  " OR product_description ILIKE '%" + descriptions[pos] + "%'";
+                     search_ranges +=  " OR product_description ILIKE $" + std::to_string(params2.size());
                 }
             }
+            params2.push_back("%" + barcode + "%");
 
-
-            sql = "SELECT rs_price, barcode, supplier, product_description, color, type FROM store.products WHERE barcode = '" + barcode + "' OR (";
-            sql += search_ranges + " OR store.products.supplier ILIKE '%" + barcode + "%' ) ORDER BY modified_date DESC;";
-            resp.assign(pgbc.runCommand(sql));
+            sql = "SELECT rs_price, barcode, supplier, product_description, color, type FROM store.products WHERE barcode = $1 OR (";
+            sql += search_ranges + " OR store.products.supplier ILIKE $" + std::to_string(params2.size()) + " ) ORDER BY updated_at DESC;";
+            resp.assign(pgbc.runCommandParams(sql, params2));
             warning = pgbc.getWarnings();
             error = pgbc.getLastError();
             if ( error != "" ) {
@@ -1218,17 +1356,17 @@ std::string get_details(std::string barcode, const std::string user,
 }
 
 static inline
-std::string get_stock_count(const std::string barcde, const std::string user, 
+std::string get_stock_count(const std::string barcde, const std::string user,
   const std::string password, const std::string database) {
-    std::string sql = "SELECT quantity FROM store.stock WHERE barcode = '" + barcde + "';";
+    std::string sql = "SELECT quantity FROM store.stock WHERE barcode = $1";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return "{\"error\": \"System error confoigutaion file is missing!\"}";
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning, resp;
-        resp.assign(pgbc.runCommand(sql));
+        resp.assign(pgbc.runCommandParams(sql, {barcde}));
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" ) {
@@ -1292,7 +1430,7 @@ std::string get_dashboard(const std::string user,
                     daily.erase ( decimal + 3);
                 }
             }
-            std::string date = jDailies["modified_date"];
+            std::string date = jDailies["cashup_date"]; // was "modified_date" — that key was never in this query's result set, so this was always blank
             date = clean_value(date);
             OmniIndex::Utils::Utils::trim(date);
             if ( daily != "" || daily != "null" ) {
@@ -1314,15 +1452,15 @@ std::string stock_take(const std::string barcode, const std::string user,
     //     return "";
     // }
     std::string quantity = "1";
-    std::string sql = "SELECT quantity FROM store.stock_take WHERE barcode = '" + barcode + "' ORDER BY counted_at DESC LIMIT 1;";
+    std::string sql = "SELECT quantity FROM store.stock_take WHERE barcode = $1 ORDER BY counted_at DESC LIMIT 1";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return "";
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning;
-        std::string resp(pgbc.runCommand(sql));
+        std::string resp(pgbc.runCommandParams(sql, {barcode}));
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" ) {
@@ -1347,8 +1485,8 @@ std::string stock_take(const std::string barcode, const std::string user,
             total_quantity = std::stol(current_qty) + std::stol(quantity);
         }
         
-        sql = "INSERT INTO store.stock_take (quantity, barcode) VALUES (" + std::to_string(total_quantity) + ",'" + barcode + "');";
-        int i_resp = pgbc.exec(sql);
+        sql = "INSERT INTO store.stock_take (quantity, barcode) VALUES ($1, $2)";
+        int i_resp = pgbc.execParams(sql, {std::to_string(total_quantity), barcode});
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" || i_resp != 0 ) {
@@ -1356,8 +1494,8 @@ std::string stock_take(const std::string barcode, const std::string user,
             return "";
         }
 
-        sql = "SELECT quantity FROM store.stock WHERE barcode = '" + barcode + "';";
-        resp.assign(pgbc.runCommand(sql));
+        sql = "SELECT quantity FROM store.stock WHERE barcode = $1";
+        resp.assign(pgbc.runCommandParams(sql, {barcode}));
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" ) {
@@ -1415,8 +1553,8 @@ bool complete_stock_take(const std::string user,
             if ( false_pool_count == 0 ) {
                 pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
             }
-            sql = "SELECT p.supplier, p.product_description, p.color, p.type, s.quantity FROM store.products AS p JOIN store.stock AS s ON p.barcode = s.barcode WHERE p.barcode = '" + barcode + "';";
-            std::string resp_data(pgbc.runCommand(sql));
+            sql = "SELECT p.supplier, p.product_description, p.color, p.type, s.quantity FROM store.products AS p JOIN store.stock AS s ON p.barcode = s.barcode WHERE p.barcode = $1";
+            std::string resp_data(pgbc.runCommandParams(sql, {barcode}));
             false_pool_count++;
             if ( false_pool_count == 50 ) {
                 pgbc.close();
@@ -1439,7 +1577,7 @@ bool complete_stock_take(const std::string user,
             OmniIndex::Utils::Utils::trim(color);      
             std::string type = jData["type"];
             OmniIndex::Utils::Utils::trim(type);
-            std::string supplier = jData["supplier_encrypt"];
+            std::string supplier = jData["supplier"]; // was "supplier_encrypt" — the query selects p.supplier, so that key was always blank
             OmniIndex::Utils::Utils::trim(supplier);
             std::string difference = std::to_string(current_quantity - count); 
             if ( quantity != "0" && difference != "0" ) {
@@ -1468,32 +1606,36 @@ static inline
 bool add_user(const std::string user, const std::string new_user, const std::string  new_password, std::string  address, const std::string zip_code,
     const std::string  telephone, const std::string  first_name, const std::string last_name, const std::string  password, const std::string  database) {
         /** Does this user exist */
-        std::string sql = "SELECT point_number FROM store.customers WHERE email ILIKE '%" + new_user + "%' ;";
+        std::string sql = "SELECT point_number FROM store.customers WHERE email ILIKE $1";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
     }
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning;
-        std::string resp(pgbc.runCommand(sql));
+        std::string resp(pgbc.runCommandParams(sql, {"%" + new_user + "%"}));
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
-        pgbc.close();/** We need to pool  */
         if ( error != "" ) {
+            pgbc.close();
             return false;
         }
         JSON<std::string,std::string> jUser(resp);
-        std::string points = jUser["point_number"];  
+        std::string points = jUser["point_number"];
         if ( points.length() > 4 ) {
+            pgbc.close();
             return false;
         }
-        /** get teh points number */    
+        /** get teh points number */
         points = OmniIndex::Utils::Utils::create_ean_code();
         address = clean_value(address);
-        sql = "INSERT INTO store.customers(email, password, address, postcode, telephone, name, surname, point_number) VALUES ('" + new_user + "','" + new_password + "','" + address + "','" + zip_code + "','" + telephone + "','" + first_name + "','" + last_name + "','" + points + "');";   
-        pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
-        int i_resp = pgbc.exec(sql);
+        // Password is hashed with the same pgcrypto scheme as store.users, rather than
+        // stored in plaintext as this used to do.
+        sql = "INSERT INTO store.customers(email, password, address, postcode, telephone, name, surname, point_number) "
+              "VALUES ($1, crypt($2, gen_salt('bf')), $3, $4, $5, $6, $7, $8)";
+        int i_resp = pgbc.execParams(sql,
+            {new_user, new_password, address, zip_code, telephone, first_name, last_name, points});
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" || i_resp != 0 ) {
@@ -1501,8 +1643,8 @@ bool add_user(const std::string user, const std::string new_user, const std::str
             return false;
         }
         /** test teh insert */
-        sql = "SELECT point_number FROM store.customers WHERE email ILIKE '%" + new_user + "%' ;";
-        resp.assign(pgbc.runCommand(sql));
+        sql = "SELECT point_number FROM store.customers WHERE email ILIKE $1";
+        resp.assign(pgbc.runCommandParams(sql, {"%" + new_user + "%"}));
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != ""  ) {
@@ -1510,23 +1652,29 @@ bool add_user(const std::string user, const std::string new_user, const std::str
             return false;
         }
         JSON<std::string,std::string> jNewUser(resp);
-        std::string new_points = jNewUser["point_number"]; 
+        std::string new_points = jNewUser["point_number"];
         if ( new_points.length() < 3 ) {
+            pgbc.close();
             return false;
-        } 
-        sql = "INSERT INTO store.reward_points (point_number, points_earned, points_used, points_remaining) VALUES ('" + points + "',0,0,0);";
-        i_resp = pgbc.exec(sql);
+        }
+        sql = "INSERT INTO store.reward_points (point_number, points_earned, points_used, points_remaining) VALUES ($1, 0, 0, 0)";
+        i_resp = pgbc.execParams(sql, {points});
         warning = pgbc.getWarnings();
-        error = pgbc.getLastError();            
+        error = pgbc.getLastError();
+        pgbc.close();
         return true;
     }
-    return false;        
+    return false;
 }
 
 static inline 
 std::string get_advice(std::string prompt) {
     prompt += " Please provide a detailed response to the question, and only respond with craft advice. Format as HTML please";
-    std::string response = call_boudica(prompt);
+    // Fixed: this used to hand the raw Boudica JSON reply straight back to the caller
+    // (getadvice's dispatch then wrapped that whole JSON object inside another
+    // "response": "..." string with no escaping — invalid JSON as soon as the AI's answer
+    // contained a quote, which is essentially always). Extracts the actual answer text.
+    std::string response = extract_boudica_response_text(call_boudica(prompt));
     OmniIndex::Utils::Utils::trim(response);
     if ( response.length() < 1 ) {
         return "Could not get a response from the AI system.";
@@ -1609,7 +1757,7 @@ std::string predict_reorder_date(std::string barcode, std::string db_user, std::
                      "FROM store.products p "
                      "LEFT JOIN store.stock s ON p.barcode = s.barcode "
                      "LEFT JOIN store.period_sales ps ON p.barcode = ps.barcode "
-                     "WHERE p.barcode = '" + barcode + "' "
+                     "WHERE p.barcode = $1 "
                      "AND ps.sale_date > NOW() - INTERVAL '30 days' "
                      "GROUP BY p.id, p.product_description, s.quantity, s.available";
     
@@ -1634,13 +1782,14 @@ std::string record_web_store_order(std::string order_id, std::string customer_em
     
     /** Insert order into customer_orders */
     std::string order_date = OmniIndex::Utils::Utils::getCurrentUTCTime();
-    std::string sql = "INSERT INTO store.customer_orders (order_id, email, items, total_value, payment_method, order_status, order_date, subtotal, vat_amount, vat_rate) VALUES ('" 
-                    + order_id + "','" + customer_email + "','" + items_json + "'," + total_value + ",'card','completed','" + order_date + "'," 
-                    + std::to_string(subtotal) + "," + std::to_string(vat_amount) + "," + std::to_string(vat_rate) + ");";
-    
-    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+    std::string sql = "INSERT INTO store.customer_orders "
+        "(order_id, email, items, total_value, payment_method, order_status, order_date, subtotal, vat_amount, vat_rate) "
+        "VALUES ($1, $2, $3, $4, 'card', 'completed', $5, $6, $7, $8)";
+
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
-        int i_resp = pgbc.exec(sql);
+        int i_resp = pgbc.execParams(sql, {order_id, customer_email, items_json, total_value, order_date,
+            std::to_string(subtotal), std::to_string(vat_amount), std::to_string(vat_rate)});
         std::string warning = pgbc.getWarnings();
         std::string error = pgbc.getLastError();
         
@@ -1704,8 +1853,8 @@ std::string get_order_history(std::string customer_email, const std::string user
     }
     
     // Query orders for this customer
-    std::string sql = "SELECT order_id, order_date, items, total_value, payment_method, order_status, subtotal, vat_amount FROM store.customer_orders WHERE email = '" + customer_email + "' ORDER BY order_date DESC;";
-    std::string resp = pgbc.runCommand(sql);
+    std::string sql = "SELECT order_id, order_date, items, total_value, payment_method, order_status, subtotal, vat_amount FROM store.customer_orders WHERE email = $1 ORDER BY order_date DESC";
+    std::string resp = pgbc.runCommandParams(sql, {customer_email});
     pgbc.close();
     
     if ( resp.empty() || resp.find("\"order_id\"") == std::string::npos ) {
@@ -1794,8 +1943,8 @@ std::string validate_cart_inventory(std::string items_json, const std::string us
             
             if ( barcode.length() > 0 ) {
                 // Check stock availability
-                std::string sql = "SELECT quantity, product_description FROM store.stock AS s JOIN store.products AS p ON s.barcode = p.barcode WHERE s.barcode = '" + barcode + "';";
-                std::string resp = pgbc.runCommand(sql);
+                std::string sql = "SELECT quantity, product_description FROM store.stock AS s JOIN store.products AS p ON s.barcode = p.barcode WHERE s.barcode = $1";
+                std::string resp = pgbc.runCommandParams(sql, {barcode});
                 
                 JSON<std::string,std::string> jStock(resp);
                 std::string available_qty = jStock["quantity"];
@@ -1844,9 +1993,20 @@ std::string get_sales_report(std::string start_date, std::string end_date, const
         return "{\"error\": \"Database connection failed\"}";
     }
     
-    // Query: sales by date range
-    std::string sql = "SELECT barcode, product_description, SUM(quantity) AS total_quantity, SUM(price * quantity) AS total_revenue FROM store.period_sales WHERE sale_date >= '" + start_date + "' AND sale_date <= '" + end_date + "' GROUP BY barcode, product_description ORDER BY total_revenue DESC;";
-    std::string resp = pgbc.runCommand(sql);
+    // Query: sales by date range.
+    // Fixed while parameterizing: this used to select product_description and a "price"
+    // column directly from store.period_sales, neither of which exists there (only
+    // store.products has product_description; there is no price column anywhere in
+    // period_sales) — the query failed outright. Joins products for the description and
+    // uses current unit price for the revenue estimate (period_sales' running_total is a
+    // cumulative per-period ledger figure, not a per-row revenue amount, so it can't be
+    // summed directly — see CODE_VERIFIED_AUDIT.md for the deeper ledger-semantics note).
+    std::string sql = "SELECT ps.barcode, p.product_description, SUM(ps.quantity) AS total_quantity, "
+        "SUM(ps.quantity * p.rs_price) AS total_revenue "
+        "FROM store.period_sales ps JOIN store.products p ON p.barcode = ps.barcode "
+        "WHERE ps.sale_date >= $1 AND ps.sale_date <= $2 "
+        "GROUP BY ps.barcode, p.product_description ORDER BY total_revenue DESC";
+    std::string resp = pgbc.runCommandParams(sql, {start_date, end_date});
     pgbc.close();
     
     if ( resp.empty() ) {
@@ -1909,8 +2069,8 @@ std::string get_revenue_report(std::string start_date, std::string end_date, con
     }
     
     // Calculate revenue metrics
-    std::string sql = "SELECT COUNT(DISTINCT email) AS customer_count, COUNT(*) AS transaction_count, SUM(total_value) AS gross_revenue, AVG(total_value) AS avg_transaction FROM store.customer_orders WHERE order_date >= '" + start_date + "' AND order_date <= '" + end_date + "';";
-    std::string resp = pgbc.runCommand(sql);
+    std::string sql = "SELECT COUNT(DISTINCT email) AS customer_count, COUNT(*) AS transaction_count, SUM(total_value) AS gross_revenue, AVG(total_value) AS avg_transaction FROM store.customer_orders WHERE order_date >= $1 AND order_date <= $2";
+    std::string resp = pgbc.runCommandParams(sql, {start_date, end_date});
     
     JSON<std::string,std::string> jMetrics(resp);
     std::string customer_count = jMetrics["customer_count"];
@@ -1926,7 +2086,7 @@ std::string get_revenue_report(std::string start_date, std::string end_date, con
     pgbc.close();
     
     // Assuming 15% COGS for accounting purposes (this can be configured)
-    double revenue = gross_revenue.length() > 0 ? std::stod(gross_revenue) : 0;
+    double revenue = safe_stod(gross_revenue);
     double cogs = revenue * 0.15;  // Cost of Goods Sold
     double gross_profit = revenue - cogs;
     double profit_margin = revenue > 0 ? (gross_profit / revenue * 100) : 0;
@@ -1980,9 +2140,9 @@ std::string get_inventory_report(const std::string user, const std::string passw
             std::string barcode = jItem["barcode"];
             std::string description = jItem["product_description"];
             std::string quantity = jItem["quantity"];
-            std::string price = jItem["price"];
+            std::string price = jItem["rs_price"]; // was "price" — the query selects p.rs_price, so this was always blank (invalid JSON: "unit_price": ,)
             std::string inv_value = jItem["inventory_value"];
-            std::string supplier = jItem["supplier_encrypt"];
+            std::string supplier = jItem["supplier"]; // was "supplier_encrypt" — the query selects p.supplier, so that key was always blank
             
             OmniIndex::Utils::Utils::trim(barcode);
             OmniIndex::Utils::Utils::trim(description);
@@ -1992,8 +2152,8 @@ std::string get_inventory_report(const std::string user, const std::string passw
             OmniIndex::Utils::Utils::trim(supplier);
             
             if ( barcode.length() > 0 && quantity.length() > 0 ) {
-                int qty = std::stoi(quantity);
-                double val = inv_value.length() > 0 ? std::stod(inv_value) : 0;
+                int qty = (int) safe_stol(quantity);
+                double val = safe_stod(inv_value);
                 total_value += val;
                 total_items += qty;
                 
@@ -2006,8 +2166,46 @@ std::string get_inventory_report(const std::string user, const std::string passw
         inventory_json.pop_back();
     }
     inventory_json += "], \"total_inventory_value\": " + std::to_string(total_value) + ", \"total_items\": " + std::to_string(total_items) + "}";
-    
+
     return inventory_json;
+}
+
+/** AI reporting engine: reads real stock/sales data out of the database and asks Boudica
+ * AI to analyze it, rather than the fixed statistical predict_* forecasts above. Reuses
+ * the existing report functions for the underlying data so the AI's narrative and the
+ * store's own numeric reports are always looking at the same numbers. */
+static inline
+std::string get_stock_analysis(const std::string user, const std::string password, const std::string database) {
+    std::string inventory_json = get_inventory_report(user, password, database);
+    std::string prompt = "You are a retail inventory analyst for a small shop. Here is the "
+        "store's current stock data as JSON: " + inventory_json + ". Based on this data: "
+        "1) identify any items that look low in stock and may need reordering soon, "
+        "2) note any items that look overstocked or slow-moving, "
+        "3) give clear, prioritized, practical restocking recommendations. "
+        "Keep the response concise and written for a shop owner, not a data scientist.";
+    std::string analysis_text = extract_boudica_response_text(call_boudica(prompt, 900));
+    OmniIndex::Utils::Utils::trim(analysis_text);
+    if ( analysis_text.empty() ) {
+        analysis_text = "Could not get a response from the AI system.";
+    }
+    return "{\"analysis\": \"" + json_escape(analysis_text) + "\", \"data\": " + inventory_json + "}";
+}
+
+static inline
+std::string get_sales_analysis(std::string start_date, std::string end_date, const std::string user,
+    const std::string password, const std::string database) {
+    std::string sales_json = get_sales_report(start_date, end_date, user, password, database);
+    std::string prompt = "You are a retail sales analyst for a small shop. Here is the "
+        "store's sales data for the period " + start_date + " to " + end_date + " as JSON: "
+        + sales_json + ". Based on this data: 1) identify the best and worst performing "
+        "products, 2) note any notable trends, 3) give clear, practical recommendations to "
+        "improve sales. Keep the response concise and written for a shop owner, not a data scientist.";
+    std::string analysis_text = extract_boudica_response_text(call_boudica(prompt, 900));
+    OmniIndex::Utils::Utils::trim(analysis_text);
+    if ( analysis_text.empty() ) {
+        analysis_text = "Could not get a response from the AI system.";
+    }
+    return "{\"analysis\": \"" + json_escape(analysis_text) + "\", \"data\": " + sales_json + "}";
 }
 
 /** Tax Summary - Sales tax data for accounting */
@@ -2025,8 +2223,8 @@ std::string get_tax_summary(std::string start_date, std::string end_date, const 
     }
     
     // Get total sales for tax period
-    std::string sql = "SELECT COUNT(*) AS order_count, SUM(total_value) AS total_sales FROM store.customer_orders WHERE order_date >= '" + start_date + "' AND order_date <= '" + end_date + "';";
-    std::string resp = pgbc.runCommand(sql);
+    std::string sql = "SELECT COUNT(*) AS order_count, SUM(total_value) AS total_sales FROM store.customer_orders WHERE order_date >= $1 AND order_date <= $2";
+    std::string resp = pgbc.runCommandParams(sql, {start_date, end_date});
     pgbc.close();
     
     JSON<std::string,std::string> jData(resp);
@@ -2036,7 +2234,7 @@ std::string get_tax_summary(std::string start_date, std::string end_date, const 
     OmniIndex::Utils::Utils::trim(order_count);
     OmniIndex::Utils::Utils::trim(total_sales);
     
-    double sales = total_sales.length() > 0 ? std::stod(total_sales) : 0;
+    double sales = safe_stod(total_sales);
     double vat_20pct = sales * 0.20;  // 20% VAT (UK standard rate)
     double vat_5pct = sales * 0.05;   // 5% VAT (reduced rate)
     
@@ -2067,8 +2265,8 @@ std::string get_receipt(std::string order_id, const std::string user, const std:
     }
     
     // Get order details
-    std::string sql = "SELECT order_id, email, items, total_value, payment_method, order_status, order_date, subtotal, vat_amount, vat_rate FROM store.customer_orders WHERE order_id = '" + order_id + "' LIMIT 1;";
-    std::string resp = pgbc.runCommand(sql);
+    std::string sql = "SELECT order_id, email, items, total_value, payment_method, order_status, order_date, subtotal, vat_amount, vat_rate FROM store.customer_orders WHERE order_id = $1 LIMIT 1";
+    std::string resp = pgbc.runCommandParams(sql, {order_id});
     
     if ( resp.empty() ) {
         pgbc.close();
@@ -2127,8 +2325,8 @@ std::string get_receipt(std::string order_id, const std::string user, const std:
             
             if ( barcode.length() > 0 ) {
                 // Get product description
-                std::string prod_sql = "SELECT product_description FROM store.products WHERE barcode = '" + barcode + "' LIMIT 1;";
-                std::string prod_resp = pgbc.runCommand(prod_sql);
+                std::string prod_sql = "SELECT product_description FROM store.products WHERE barcode = $1 LIMIT 1";
+                std::string prod_resp = pgbc.runCommandParams(prod_sql, {barcode});
                 
                 JSON<std::string,std::string> jProd(prod_resp);
                 std::string description = jProd["product_description"];
@@ -2180,8 +2378,16 @@ int main (int argc, char** argv) {
     std::cout << "Access-Control-Allow-Methods: *\r\n";
     std::cout << "Content-Type: application/json\r\n\r\n";
     std::map<std::string, std::string> m_configuration = get_configuration();
+    // Seed the connection pool exactly once, explicitly, with the single configured
+    // service-account credentials — before any command handler can construct a
+    // Postgresql object. ConnectionPool::initialize() is a no-op after its first call, so
+    // whichever Postgresql got constructed first used to decide the pool's credentials for
+    // the rest of this process; every request now gets the same, correct answer regardless
+    // of which command runs or what username/password a caller happens to submit.
+    ConnectionPool::getInstance().initialize(
+        m_configuration["username"], m_configuration["password"],
+        m_configuration["server"], m_configuration["port"], "postgres");
     std::string queryString;
-    bool is_white_listed = false;
     #ifdef DEBUG 
         /** Addproduct(const std::string supplier, const std::string barcode, const std::string rs_price, const std::string description ...) */
         //queryString="username=sibain@omniindex.io&command=addproduct&password=Ch35t3r&supplier=James C. Brett&barcode=&createbarcode=true&rs_price=120.2&description=Wendy - With Wool Aran 400g";
@@ -2264,54 +2470,35 @@ int main (int argc, char** argv) {
             }
         }
 
-        /** Get teh server name */
-
-        itr = environment.find("SERVER_NAME");
-        std::string server_name;
-        if ( itr != environment.end() ) { server_name = itr->second.c_str(); }
-        std::string white_list = m_configuration["server_whitelist"];
-        if ( white_list.length() > 4 ) {/** 2 spaces, newline '  \n' */
-            if ( white_list.find(server_name) == std::string::npos) {
-                /** Return quietly */
-                // std::cout << "\n\n";
-                // return 0;
-                is_white_listed = true;
-            } else {
-                is_white_listed = true;
-            }
-        }
-is_white_listed = true;
-
     #endif
+    // Fixed: this used to compute a "whitelist" match against SERVER_NAME (the serving
+    // host's own name — constant for every request this deployment ever receives, not the
+    // calling client's identity) and then, regardless of that result, an unconditional
+    // `is_white_listed = true;` right after made the whole check dead code anyway. Either
+    // way, any request that simply omitted username/password silently authenticated as
+    // the configured epos_user/epos_password service account — no credentials required at
+    // all. Removed rather than "fixed": a real per-caller allowlist would need to check
+    // REMOTE_ADDR, and even then a caller-omits-credentials backdoor isn't something to
+    // keep. Every command now requires real credentials.
     QueryData <std::string, std::string> queryData(queryString);
 
     QueryData<std::string, std::string>::iterator it = queryData.find("username");
     std::string username, command, password, database, email_address;
     if ( it != queryData.end() ) {
         email_address = it->second;
-        email_address = url_decode(email_address);       
+        email_address = url_decode(email_address);
     } else {
-        if ( is_white_listed ) {
-            email_address = m_configuration["epos_user"];
-        } else {
-            /** return error  */
-            std::cout << "{\"error\": \"username and or password not found\"}\n\n";
-            return 0;
-        }
+        std::cout << "{\"error\": \"username and or password not found\"}\n\n";
+        return 0;
     }
     it = queryData.find("password");
     if ( it != queryData.end() ) {
         password = it->second;
-        password = url_decode(password);       
+        password = url_decode(password);
     } else {
-        if ( is_white_listed ) {
-            password = m_configuration["epos_password"];
-        } else {
-            /** return error  */
-            std::cout << "{\"error\": \"username and or password not found\"}\n\n";
-            return 0;
-        }
-    } 
+        std::cout << "{\"error\": \"username and or password not found\"}\n\n";
+        return 0;
+    }
     it = queryData.find("command");
     if ( it != queryData.end() ) {
         command = it->second;
@@ -2357,7 +2544,6 @@ is_white_listed = true;
             std::string db_port = m_conf["port"];
             std::string db_name = "postgres";                // authentication database
             
-            std::cerr << "[LOGIN] Config loaded: user=" << db_user << " password=" << db_password << " server=" << db_server << " port=" << db_port << " database=" << db_name << std::endl;
             std::cerr << "[LOGIN] Connection string: postgresql://" << db_user << ":***@" << db_server << ":" << db_port << "/" << db_name << std::endl;
             std::cerr.flush();
             
@@ -2799,7 +2985,7 @@ is_white_listed = true;
             return 0;  
         }
         std::string response = get_advice(prompt);
-        std::cout << "{\"response\": \"" + response + "\"}\n\n";
+        std::cout << "{\"response\": \"" + json_escape(response) + "\"}\n\n";
         return 0;  
     }
     else if ( command == "webstoreorder" ) {
@@ -2917,6 +3103,38 @@ is_white_listed = true;
     }
     else if ( command == "inventoryreport" ) {
         std::string response = get_inventory_report(jUser["username"], password, database);
+        std::cout << response << "\n\n";
+        return 0;
+    }
+    else if ( command == "stockanalysis" ) {
+        // AI reporting engine: current stock data + a Boudica AI narrative analysis/
+        // reordering recommendation on top of it.
+        std::string response = get_stock_analysis(jUser["username"], password, database);
+        std::cout << response << "\n\n";
+        return 0;
+    }
+    else if ( command == "salesanalysis" ) {
+        std::string start_date, end_date;
+
+        it = queryData.find("start_date");
+        if ( it != queryData.end() ) {
+            start_date = it->second;
+            start_date = url_decode(start_date);
+        } else {
+            std::cout << "{\"error\": \"start_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            return 0;
+        }
+
+        it = queryData.find("end_date");
+        if ( it != queryData.end() ) {
+            end_date = it->second;
+            end_date = url_decode(end_date);
+        } else {
+            std::cout << "{\"error\": \"end_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            return 0;
+        }
+
+        std::string response = get_sales_analysis(start_date, end_date, jUser["username"], password, database);
         std::cout << response << "\n\n";
         return 0;
     }
@@ -3252,11 +3470,11 @@ is_white_listed = true;
         
         std::string user = jUser["username"];
         std::string query = predict_reorder_date(barcode, user, password, database);
-        
+
         try {
             Postgresql pgbc = Postgresql( user, password, "localhost", "5432", database );
             if ( pgbc._isConnected ) {
-                std::string resp = pgbc.runCommand(query);
+                std::string resp = pgbc.runCommandParams(query, {barcode});
                 std::string error = pgbc.getLastError();
                 pgbc.close();
                 

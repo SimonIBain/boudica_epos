@@ -1,0 +1,41 @@
+-- ===== LOCAL DEV SEED USERS =====
+-- Fixes the placeholder/broken original code/sql/add_admin.sql (it contained literal
+-- "<email>"/"<PASSWORD>" tokens and an unclosed string literal in the crypt() call — not
+-- valid SQL as shipped) and adds a second seeded identity for the web store.
+--
+-- Every command handler now connects to Postgres via a single, explicitly pre-initialized
+-- connection pool using the one configured service account ("store") — a caller's own
+-- username/password is checked only against this store.users row (bcrypt via pgcrypto),
+-- never used as a literal Postgres connection credential. So, unlike an earlier pass at
+-- this file, no native Postgres LOGIN ROLE is needed per app user any more — just this
+-- store.users row. See CODE_VERIFIED_AUDIT.md for how that used to work (by accident, via
+-- a connection-pool bug) and main.cpp's explicit ConnectionPool::initialize() call for the
+-- fix.
+
+INSERT INTO store.users (username, email, password_hash, role, full_name, is_active)
+VALUES ('admin', 'admin@localhost', crypt('${ADMIN_PASSWORD}', gen_salt('bf')), 'admin', 'Local Admin', true)
+ON CONFLICT (username) DO UPDATE SET
+    password_hash = EXCLUDED.password_hash,
+    updated_at = CURRENT_TIMESTAMP;
+
+INSERT INTO store.users (username, email, password_hash, role, full_name, is_active)
+VALUES ('web_store_user', 'web-store@localhost', crypt('${WEB_STORE_PASSWORD}', gen_salt('bf')), 'operator', 'Web Store Service Account', true)
+ON CONFLICT (username) DO UPDATE SET
+    password_hash = EXCLUDED.password_hash,
+    updated_at = CURRENT_TIMESTAMP;
+
+-- A starter product + stock row so the till/store aren't completely empty on first run.
+INSERT INTO store.suppliers (supplier, telephone, emailaddress)
+VALUES ('Demo Supplier', '01234 567890', 'supplier@localhost')
+ON CONFLICT (supplier) DO NOTHING;
+
+INSERT INTO store.products (supplier, product_description, color, type, purchase_price, rs_price, pack_size, barcode)
+VALUES ('Demo Supplier', 'Demo Wool Aran 400g', 'Blue', 'Yarn', 4.50, 8.99, '400g', '5000000000001')
+ON CONFLICT (barcode) DO NOTHING;
+
+INSERT INTO store.stock (barcode, quantity, available)
+VALUES ('5000000000001', 50, 50)
+ON CONFLICT (barcode) DO NOTHING;
+
+-- Verify seed
+SELECT username, email, role, is_active FROM store.users;

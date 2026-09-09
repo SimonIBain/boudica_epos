@@ -343,26 +343,26 @@ int Postgresql::exec(std::string query) {
     PQsetNoticeReceiver(_PGBCConnection, setWarning, NULL);
     PGresult* results = 0;
     try {
-        results = PQexec(_PGBCConnection, query.c_str()); 
+        results = PQexec(_PGBCConnection, query.c_str());
 #ifdef DEBUG
     printf("The exec result was %i\n", PQresultStatus(results));
 #endif
-        if (PQresultStatus(results) == PGRES_COMMAND_OK ) { return 0; } 
+        bool ok = (PQresultStatus(results) == PGRES_COMMAND_OK);
+        PQclear(results);
+        return ok ? 0 : 1;
     } catch ( std::exception &e ) {
         std::string error = "PGBC exec caused a std::exception. The message was: ";
         error += e.what();
-        OmniIndex::Utils::Logging::log("PGBC", error);          
-        return 1; 
-    } 
-    return 1;   
+        OmniIndex::Utils::Logging::log("PGBC", error);
+        return 1;
+    }
+    return 1;
 }
 
-const char* Postgresql::runCommand(std::string commandData) {
-    PGresult* results = 0;
-    PQsetNoticeReceiver(_PGBCConnection, setWarning, NULL);
-    try {
-        results = PQexec(_PGBCConnection, commandData.c_str());  
-    } catch ( ... ) {}
+/** Shared PGresult -> JSON conversion used by both runCommand() and runCommandParams(),
+ * so the parameterized path returns byte-identical output to the string-built path
+ * (callers throughout main.cpp parse this JSON and must not need to change). */
+static std::string pgresultToJson(PGresult* results, const std::string& lastError) {
     long recCount = 0;
     std::string s_results;
     std::string res = "{";
@@ -378,13 +378,13 @@ const char* Postgresql::runCommand(std::string commandData) {
                     std::string column = PQfname(results, col);
                     if ( col > 0 ) {res += ",";}
                     res += "\"" + column + "\": \"\"";
-                    s_results = res; 
-                }            
+                    s_results = res;
+                }
             }
             res = s_results;
         }
         for ( int row = 0; row < rows; row++ ) {
-            res += "{";//}"\"" + std::to_string(recCount) + "\" : {";
+            res += "{";
             recCount++;
             for ( int col = 0; col < cols; col++ ) {
                 std::string column = PQfname(results, col);
@@ -393,33 +393,68 @@ const char* Postgresql::runCommand(std::string commandData) {
                     res += "\"" + column + "\": \"" + value+ "\"";
                     s_results = value;
                 } else {
-                    //s_results = value;
                     res += "\"" + column + "\": \"" + value+ "\",";
-                }    
+                }
             }
             if ( row == rows -1 ) {
                 res += "}";
             } else {
-                res += "},\n"; 
-            }     
-        }                
-        res += "}";  
+                res += "},\n";
+            }
+        }
+        res += "}";
     } else {
-        std::string err = getLastError();
+        std::string err = lastError;
         size_t start = err.find(" '");
         if ( start != std::string::npos ) {
             size_t end = err.find(", ", start);
             if ( end != std::string::npos ) {
                 err.erase ( start, end - start );
             }
-        } 
-        if ( res.find("}") != std::string::npos ) {              
+        }
+        if ( res.find("}") != std::string::npos ) {
             res = "{\"Success\" : \"Fail\", \"message\" : \"" + err + "\"}";
         }
-    } 
-    const char* ret = (char *) malloc( res.size()+1 );
-    strcpy((char*)ret, (char*)res.c_str());      
+    }
+    return res;
+}
 
+const char* Postgresql::runCommandParams(std::string sql, const std::vector<std::string>& params) {
+    PQsetNoticeReceiver(_PGBCConnection, setWarning, NULL);
+    std::vector<const char*> values;
+    values.reserve(params.size());
+    for (const auto& p : params) { values.push_back(p.c_str()); }
+    PGresult* results = PQexecParams(_PGBCConnection, sql.c_str(),
+        static_cast<int>(values.size()), nullptr, values.data(), nullptr, nullptr, 0);
+    std::string res = pgresultToJson(results, getLastError());
+    PQclear(results);
+    const char* ret = (char*) malloc(res.size() + 1);
+    strcpy((char*)ret, res.c_str());
+    return ret;
+}
+
+int Postgresql::execParams(std::string sql, const std::vector<std::string>& params) {
+    PQsetNoticeReceiver(_PGBCConnection, setWarning, NULL);
+    std::vector<const char*> values;
+    values.reserve(params.size());
+    for (const auto& p : params) { values.push_back(p.c_str()); }
+    PGresult* results = PQexecParams(_PGBCConnection, sql.c_str(),
+        static_cast<int>(values.size()), nullptr, values.data(), nullptr, nullptr, 0);
+    bool ok = (PQresultStatus(results) == PGRES_COMMAND_OK);
+    PQclear(results);
+    return ok ? 0 : 1;
+}
+
+const char* Postgresql::runCommand(std::string commandData) {
+    PGresult* results = 0;
+    PQsetNoticeReceiver(_PGBCConnection, setWarning, NULL);
+    try {
+        results = PQexec(_PGBCConnection, commandData.c_str());
+    } catch ( ... ) {}
+    std::string res = pgresultToJson(results, getLastError());
+    PQclear(results);
+    const char* ret = (char *) malloc( res.size()+1 );
+    strcpy((char*)ret, res.c_str());
     return ret;
 }
 
@@ -445,12 +480,14 @@ std::string Postgresql::getDetailedError() {
         return "Connection not established";
     }
     
+    PGresult* empty = PQmakeEmptyPGresult(_PGBCConnection, PGRES_FATAL_ERROR);
     std::string error = "ERROR [";
-    error += PQresultErrorField(PQmakeEmptyPGresult(_PGBCConnection, PGRES_FATAL_ERROR), PG_DIAG_SQLSTATE);
+    error += PQresultErrorField(empty, PG_DIAG_SQLSTATE);
     error += "]: ";
     error += PQerrorMessage(_PGBCConnection);
-    
-    OmniIndex::Utils::Logging::log("PGBC", error);
+    PQclear(empty);
+
+    std::cerr << "[PGBC] " << error << std::endl;
     return error;
 }
 
@@ -459,64 +496,66 @@ bool Postgresql::isValid() {
     return (PQstatus(_PGBCConnection) == CONNECTION_OK);
 }
 
+// NOTE: these deliberately use std::cerr, not OmniIndex::Utils::Logging::log() — that
+// function makes its own DB call via the same connection pool, and every other caller of
+// the pool in this file has its Logging::log() calls commented out with a note that it
+// "hangs indefinitely". Since begin/commit/rollback are now on the hot path for every
+// multi-statement write, they stay off that landmine rather than re-testing it under load.
 bool Postgresql::beginTransaction() {
     if (in_transaction) {
-        OmniIndex::Utils::Logging::log("PGBC", "Transaction already in progress");
+        std::cerr << "[PGBC] beginTransaction() - transaction already in progress" << std::endl;
         return false;
     }
-    
+
     PGresult* result = PQexec(_PGBCConnection, "BEGIN TRANSACTION");
     bool success = (PQresultStatus(result) == PGRES_COMMAND_OK);
-    
+
     if (success) {
         in_transaction = true;
-        OmniIndex::Utils::Logging::log("PGBC", "Transaction started successfully");
     } else {
-        getDetailedError();
+        std::cerr << "[PGBC] beginTransaction() failed: " << PQerrorMessage(_PGBCConnection) << std::endl;
     }
-    
+
     PQclear(result);
     return success;
 }
 
 bool Postgresql::commitTransaction() {
     if (!in_transaction) {
-        OmniIndex::Utils::Logging::log("PGBC", "No active transaction to commit");
+        std::cerr << "[PGBC] commitTransaction() - no active transaction" << std::endl;
         return false;
     }
-    
+
     PGresult* result = PQexec(_PGBCConnection, "COMMIT");
     bool success = (PQresultStatus(result) == PGRES_COMMAND_OK);
-    
+
     if (success) {
         in_transaction = false;
-        OmniIndex::Utils::Logging::log("PGBC", "Transaction committed successfully");
     } else {
-        getDetailedError();
+        std::cerr << "[PGBC] commitTransaction() failed: " << PQerrorMessage(_PGBCConnection) << std::endl;
         // Attempt rollback on commit failure
         rollbackTransaction();
     }
-    
+
     PQclear(result);
     return success;
 }
 
 bool Postgresql::rollbackTransaction() {
     if (!in_transaction) {
-        OmniIndex::Utils::Logging::log("PGBC", "No active transaction to rollback");
+        std::cerr << "[PGBC] rollbackTransaction() - no active transaction" << std::endl;
         return true;  // Not an error if no transaction active
     }
-    
+
     PGresult* result = PQexec(_PGBCConnection, "ROLLBACK");
     bool success = (PQresultStatus(result) == PGRES_COMMAND_OK);
-    
+
     if (success) {
         in_transaction = false;
-        OmniIndex::Utils::Logging::log("PGBC", "Transaction rolled back successfully");
     } else {
-        getDetailedError();
+        std::cerr << "[PGBC] rollbackTransaction() failed: " << PQerrorMessage(_PGBCConnection) << std::endl;
     }
-    
+
     PQclear(result);
     return success;
 }

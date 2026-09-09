@@ -1,0 +1,16 @@
+# Local secrets / env
+.env
+.env.*
+
+# Editor
+**/.vscode
+
+# Build artifacts
+**/build/
+**/*.o
+code/back_end/src/boudica_pos
+
+# Reference-only materials, not part of the shipped source
+github/
+incedentals/
+code/thecuriositycabins/
