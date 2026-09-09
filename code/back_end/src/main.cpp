@@ -29,7 +29,7 @@
 #include "includes/querydata.h"
 #include "includes/postgresbc.h"
 #include "includes/http.h"
-#include "includes/jsonobject.h"
+#include "includes/json_utils.h"
 #include "includes/logging.h"
 #include "includes/stripe.h"
 #include "includes/authentication.h"
@@ -40,38 +40,25 @@ const std::string UPLOAD_DIR = "uploads/";
 const std::string ALLOWED_EXTENSIONS[] = {".mp4", ".txt", ".pdf", ".jpg", ".png", ".doc", ".docx"};
 const int NUM_ALLOWED_EXTENSIONS = 6;
 
-// Escapes a string for embedding as a JSON string literal value (quotes, backslashes,
-// control characters). Needed because call_boudica() below builds its request body by
-// hand rather than through a JSON-writing library — without this, any stock/sales
-// description or supplier name containing a quote, backslash, or newline would produce an
-// invalid request body.
-static inline
-std::string json_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (unsigned char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (c < 0x20) {
-                    char buf[8];
-                    snprintf(buf, sizeof(buf), "\\u%04x", c);
-                    out += buf;
-                } else {
-                    out += (char) c;
-                }
-        }
-    }
-    return out;
-}
-
 // Defined further down (reads /usr/lib/cgi-bin/boudica_pos.conf, rendered from env vars by
 // docker/backend/entrypoint.sh at container start).
 static std::map<std::string, std::string> get_configuration();
+
+// The overwhelming majority of command handlers below emit exactly one of these two
+// single-field shapes. Centralizing them means every one of those call sites gets
+// nlohmann's escaping for free instead of raw string concatenation (barcodes, supplier
+// names, etc. are caller-supplied and were previously spliced into the response text
+// unescaped — a quote in any of them broke the JSON output).
+static inline void emit_json_response(const std::string& message) {
+    nlohmann::json j;
+    j["response"] = message;
+    std::cout << j.dump() << "\n\n";
+}
+static inline void emit_json_error(const std::string& message) {
+    nlohmann::json j;
+    j["error"] = message;
+    std::cout << j.dump() << "\n\n";
+}
 
 // ===== BOUDICA AI INTEGRATION =====
 static inline
@@ -97,7 +84,10 @@ std::string call_boudica(std::string message, int max_tokens = 800) {
     // reachable shell-injection RCE — the message text was interpolated straight into a
     // shell command string) to a proper libcurl POST via Http::post_json(), and off manual
     // JSON-body API-key embedding to the standard Authorization header.
-    std::string payload = "{\"message\":\"" + json_escape(message) + "\",\"max_tokens\":" + std::to_string(max_tokens) + "}";
+    nlohmann::json jPayload;
+    jPayload["message"] = message;
+    jPayload["max_tokens"] = max_tokens;
+    std::string payload = jPayload.dump();
 
     std::vector<std::string> headers;
     if (!api_key.empty()) {
@@ -108,54 +98,15 @@ std::string call_boudica(std::string message, int max_tokens = 800) {
     return http.post_json(url, payload, headers);
 }
 
-// Extracts one top-level JSON string field by name, respecting quote/escape boundaries
-// (unlike the general-purpose JSON<> parser in jsonobject.h, which splits on any comma or
-// colon it finds — including ones inside the string value itself). Needed because Boudica's
-// AI answers are free-form HTML/markdown text that routinely contains commas and colons
-// (list items like "Safety Stock Optimization:", parentheticals like "(e.g., ...)"), which
-// previously corrupted JSON<>'s parse and caused it to silently return "" for "response".
-static inline
-std::string extract_json_string_field(const std::string& json, const std::string& field) {
-    std::string needle = "\"" + field + "\"";
-    size_t pos = json.find(needle);
-    if (pos == std::string::npos) { return ""; }
-    pos += needle.length();
-    while (pos < json.length() && std::isspace((unsigned char) json[pos])) { ++pos; }
-    if (pos >= json.length() || json[pos] != ':') { return ""; }
-    ++pos;
-    while (pos < json.length() && std::isspace((unsigned char) json[pos])) { ++pos; }
-    if (pos >= json.length() || json[pos] != '"') { return ""; }
-    ++pos;
-
-    std::string out;
-    while (pos < json.length() && json[pos] != '"') {
-        if (json[pos] == '\\' && pos + 1 < json.length()) {
-            char next = json[pos + 1];
-            switch (next) {
-                case 'n': out += '\n'; break;
-                case 'r': out += '\r'; break;
-                case 't': out += '\t'; break;
-                case '"': out += '"'; break;
-                case '\\': out += '\\'; break;
-                case '/': out += '/'; break;
-                default: out += next; break;
-            }
-            pos += 2;
-        } else {
-            out += json[pos];
-            ++pos;
-        }
-    }
-    return out;
-}
-
 // call_boudica() returns Boudica's full JSON reply (e.g. {"response": "...", "model":
 // ..., "tokens_generated": ..., ...}) — some callers (predict_daily_sales/weekly/monthly/
 // reorder_date) want that whole object embedded as-is; others just want the model's actual
-// answer text. This extracts just the "response" field for the latter.
+// answer text. This extracts just the "response" field for the latter. Boudica's replies
+// are always well-formed JSON, so a direct parse is enough (non-throwing: a malformed
+// reply, e.g. an HTML error page from a misconfigured host/port, just yields "").
 static inline
 std::string extract_boudica_response_text(const std::string& boudica_json) {
-    return extract_json_string_field(boudica_json, "response");
+    return json_str(nlohmann::json::parse(boudica_json, nullptr, false), "response");
 }
 
 // Legacy Gemini function (deprecated, kept for compatibility)
@@ -524,27 +475,32 @@ std::string check_user_credentials(std::string email_address, std::string passwo
         std::string resp(pgbc.runCommandParams(sql, {email_address, password}));
         std::string warnings = pgbc.getWarnings();
         std::string error = pgbc.getLastError();
-        pgbc.close(); 
+        pgbc.close();
+        nlohmann::json out;
         if ( error != "" ) {
-            error = OmniIndex::Utils::Utils::replace(error, "\"", "'"); 
-            error = OmniIndex::Utils::Utils::replace(error, "\n", " "); 
-            resp =  "{\"response\": [], \"warnings\": \"\", \"errors\": \"" + error + "\"}";
-            return resp;
+            out["response"] = nlohmann::json::array();
+            out["warnings"] = "";
+            out["errors"] = error;
+            return out.dump();
         }
-        JSON<std::string,std::string> json(resp);
-        // Check if we got actual user data (successful password match)
-        // If no match, response will have empty fields: {"id": "","username": "",...}
-        if (resp.find("\"id\": \"\"") != std::string::npos) {
-            resp =  "{\"response\": [], \"warnings\": \"\", \"errors\": \"Invalid credentials\"}";
-            return resp;            
+        // Check if we got actual user data (successful password match) — a no-match
+        // still returns a row shape with every field present but empty ({"id": "", ...}).
+        nlohmann::json row = json_row(resp);
+        if ( json_str(row, "id").empty() ) {
+            out["response"] = nlohmann::json::array();
+            out["warnings"] = "";
+            out["errors"] = "Invalid credentials";
+            return out.dump();
         }
-        resp = OmniIndex::Utils::Utils::replace(resp, "{{", "{");
-        resp = OmniIndex::Utils::Utils::replace(resp, "}}", "}");
-        resp = "{\"response\": [" + resp + "], \"warnings\": \"\", \"errors\": \"\"}";
-        resp = OmniIndex::Utils::Utils::replace(resp, "[{]", "[]");  
-        return resp;      
+        out["response"] = nlohmann::json::array({row});
+        out["warnings"] = "";
+        out["errors"] = "";
+        return out.dump();
     } else {
-        return "{\"response': [] \"error\": \"PGBC connection failed\"}";
+        nlohmann::json out;
+        out["response"] = nlohmann::json::array();
+        out["error"] = "PGBC connection failed";
+        return out.dump();
     }
 }
 
@@ -603,9 +559,9 @@ bool add_product(std::string supplier, const std::string barcode, const std::str
             pgbc.close();
             return false;
         }
-        JSON<std::string,std::string> jSupplier(resp);
+        nlohmann::json jSupplier = json_row(resp);
         /** If we have this without a barcode we will deleet the original. */
-        if ( jSupplier["supplier"] != "" && jSupplier["supplier"] != "null"  ) {
+        if ( json_str(jSupplier, "supplier") != "" && json_str(jSupplier, "supplier") != "null"  ) {
             int del_resp = pgbc.execParams("DELETE FROM store.products WHERE barcode = $1", {barcode});
             if ( del_resp != 0 ) {
                 pgbc.close();
@@ -670,21 +626,16 @@ std::string get_supplier_list(const std::string user, const std::string password
             return "{\"warning\": \"" + warning + "\", \"error\": \"" + error + "\"}";  
         }
         pgbc.close();
-        JSON<std::string,std::string> jSupplier(resp);
-        std::string response = "{\"suppliers\": [";
-        for ( size_t sz_pos = 0; sz_pos < jSupplier.size(); sz_pos++) {
-            if ( sz_pos > 0 ) {
-                response += ",\"" + jSupplier[sz_pos] + "\"";
-            } else {
-                response += "\"" + jSupplier[sz_pos] + "\"";  
-            }
+        nlohmann::json jRows = json_rows(resp);
+        nlohmann::json suppliers = nlohmann::json::array();
+        for ( const auto& row : jRows ) {
+            suppliers.push_back(json_str(row, "supplier"));
         }
-        response += "]}";
-        std::string supplier = jSupplier["supplier"]; 
-        OmniIndex::Utils::Utils::trim(supplier);
-        return response;
+        nlohmann::json out;
+        out["suppliers"] = suppliers;
+        return out.dump();
     }
-    return "";    
+    return "";
 }
 
 static inline
@@ -712,44 +663,28 @@ std::string get_workshops(const std::string user, const std::string password, co
     if ( resp.empty() || resp.find("\"id\"") == std::string::npos ) {
         return "{\"workshops\": []}";
     }
-    
-    // Parse response and build JSON array
-    std::string workshops_json = "{\"workshops\": [";
-    std::string temp_resp = resp;
-    
-    for ( size_t sz_start = temp_resp.find("{"); sz_start != std::string::npos; sz_start = temp_resp.find("{") ) {
-        temp_resp.erase(0, sz_start + 1);
-        size_t sz_end = temp_resp.find("}");
-        if ( sz_end != std::string::npos ) {
-            std::string workshop_record = temp_resp.substr(0, sz_end);
-            temp_resp.erase(0, sz_end + 1);
-            
-            JSON<std::string,std::string> jWorkshop(workshop_record);
-            std::string id = jWorkshop["id"];
-            std::string title = jWorkshop["title"];
-            std::string description = jWorkshop["description"];
-            std::string when_date = jWorkshop["when_date"];
-            std::string when_time = jWorkshop["when_time"];
-            std::string price = jWorkshop["price"];
-            
-            OmniIndex::Utils::Utils::trim(id);
-            OmniIndex::Utils::Utils::trim(title);
-            OmniIndex::Utils::Utils::trim(description);
-            OmniIndex::Utils::Utils::trim(when_date);
-            OmniIndex::Utils::Utils::trim(when_time);
-            OmniIndex::Utils::Utils::trim(price);
-            
-            if ( id.length() > 0 && title.length() > 0 ) {
-                if ( workshops_json.back() != '[' ) {
-                    workshops_json += ",";
-                }
-                workshops_json += "{\"id\": " + id + ", \"title\": \"" + title + "\", \"description\": \"" + description + "\", \"when_date\": \"" + when_date + "\", \"when_time\": \"" + when_time + "\", \"price\": " + price + "}";
-            }
+
+    nlohmann::json workshops = nlohmann::json::array();
+    for ( const auto& jWorkshop : json_rows(resp) ) {
+        std::string id = json_str(jWorkshop, "id");
+        std::string title = json_str(jWorkshop, "title");
+        if ( id.length() > 0 && title.length() > 0 ) {
+            nlohmann::json w;
+            // id/price kept as real JSON numbers, matching the shape the till/web store
+            // frontends already expect (the old hand-built output emitted them unquoted).
+            w["id"] = safe_stol(id);
+            w["title"] = title;
+            w["description"] = json_str(jWorkshop, "description");
+            w["when_date"] = json_str(jWorkshop, "when_date");
+            w["when_time"] = json_str(jWorkshop, "when_time");
+            w["price"] = safe_stod(json_str(jWorkshop, "price"));
+            workshops.push_back(w);
         }
     }
-    
-    workshops_json += "]}";
-    return workshops_json;
+
+    nlohmann::json out;
+    out["workshops"] = workshops;
+    return out.dump();
 }
 
 static inline
@@ -831,38 +766,26 @@ std::string cash_up(const std::string user, const std::string password, const st
             pgbc.close();
             return "{\"error\": \"" + error +"\"}";
         }
-        std::map<std::string, std::map<std::string, std::string> > m_totals;
-        resp = OmniIndex::Utils::Utils::replace(resp, "{{", "{");
-        std::string response = "{";
-        bool first_item = true;
         // The whole settlement (marking every period_sales row completed=0, then recording
         // the cash_up row) is one financial operation — it must not partially apply.
         pgbc.beginTransaction();
         bool txn_failed = false;
-        for ( size_t sz_start = resp.find("{"); sz_start != std::string::npos; sz_start = resp.find("{") ) {
-            resp.erase ( 0, sz_start + 1);
-            size_t sz_end = resp.find("}");
-            if ( sz_end != std::string::npos ) {
-                std::string tmp = resp.substr(0, sz_end + 1);
-                resp.erase(0, sz_end + 1);
-                JSON<std::string,std::string> jProduct(tmp);
-                /** Make sure that the object we are dealing with is older thanthe last update */
-                if ( jProduct["completed"] == "1" ) {
-                    int i = pgbc.execParams(
-                        "UPDATE store.period_sales SET completed = '0' WHERE barcode = $1",
-                        {jProduct["barcode"]});
-                    if ( i != 0 ) {
-                        txn_failed = true;
-                    }
-                    std::string sale_type = jProduct["type"];
-                    OmniIndex::Utils::Utils::toLower(sale_type);
-                    if ( sale_type == "cash" ) {
-                        cash_sales += std::stod(jProduct["running_total"]);
-                    } else if ( sale_type == "card" ) {
-                        card_sales += std::stod(jProduct["running_total"]);
-                    } else {
-                        cash_sales += std::stod(jProduct["running_total"]);
-                    }
+        for ( const auto& jProduct : json_rows(resp) ) {
+            /** Make sure that the object we are dealing with is older thanthe last update */
+            if ( json_str(jProduct, "completed") == "1" ) {
+                int i = pgbc.execParams(
+                    "UPDATE store.period_sales SET completed = '0' WHERE barcode = $1",
+                    {json_str(jProduct, "barcode")});
+                if ( i != 0 ) {
+                    txn_failed = true;
+                }
+                std::string sale_type = json_str(jProduct, "type");
+                OmniIndex::Utils::Utils::toLower(sale_type);
+                double running_total = safe_stod(json_str(jProduct, "running_total"));
+                if ( sale_type == "card" ) {
+                    card_sales += running_total;
+                } else {
+                    cash_sales += running_total;
                 }
             }
         }
@@ -872,15 +795,14 @@ std::string cash_up(const std::string user, const std::string password, const st
             return "{\"error\": \"Cashup failed while updating period sales; no changes were committed.\"}";
         }
         resp.assign(pgbc.runCommand("SELECT cash_float FROM store.till_float ORDER BY float_date DESC LIMIT 1;"));
-        JSON<std::string,std::string> jFloat(resp);
+        nlohmann::json jFloat = json_row(resp);
         // Fixed: std::stod() on an empty string throws std::invalid_argument, uncaught —
         // this crashed the whole CGI process (confirmed live: an HTTP 200 with an empty
         // body, since headers were already flushed before the crash) whenever cashup ran
         // with no till_float row ever set (e.g. a fresh install, before anyone runs
         // setfloat). Defaults to 0 instead, same as every other "empty result" case in
         // this file.
-        std::string float_str = jFloat["cash_float"];
-        long day_float = float_str.empty() ? 0 : (long) std::stod(float_str);
+        long day_float = (long) safe_stod(json_str(jFloat, "cash_float"));
         long amount_since_last_close = (card_sales + cash_sales) - day_float;
         int i_resp = pgbc.execParams(
             "INSERT INTO store.cash_up (cash_float, takings, cash_sales, card_sales) VALUES ($1, $2, $3, $4)",
@@ -894,7 +816,11 @@ std::string cash_up(const std::string user, const std::string password, const st
         pgbc.commitTransaction();
         pgbc.close();
 
-        return response + "\"total\": \"" + std::to_string(amount_since_last_close) + "\", \"card_sales\": \"" + std::to_string(std::round(card_sales*100)/100) + "\", \"cash_sales\": \"" + std::to_string(std::round(cash_sales*100)/100) + "\"}\n\n";
+        nlohmann::json out;
+        out["total"] = std::to_string(amount_since_last_close);
+        out["card_sales"] = std::to_string(std::round(card_sales*100)/100);
+        out["cash_sales"] = std::to_string(std::round(cash_sales*100)/100);
+        return out.dump() + "\n\n";
     } else {
         return "{\"total\": \"Undetermined\", \"card_sales\": \"Undetermined\", \"cash_sales\": \"undetermined\", \"unnacounted_sales\": \"undetermined\"}\n\n";    
     }
@@ -920,13 +846,13 @@ bool update_stock(const std::string barcode, std::string quantity,
             pgbc.close();
             return false;
         }
-        JSON<std::string,std::string> jStock(resp);
-        std::string current_qty = jStock["quantity"];
+        nlohmann::json jStock = json_row(resp);
+        std::string current_qty = json_str(jStock, "quantity");
         OmniIndex::Utils::Utils::trim(current_qty);
         if ( current_qty.length() < 1 ) { current_qty = "0"; }
         // Fixed: this used to read jStock["quantity"] again instead of jStock["available"],
         // silently corrupting the "available to sell" figure on every stock movement.
-        std::string current_ava = jStock["available"];
+        std::string current_ava = json_str(jStock, "available");
         OmniIndex::Utils::Utils::trim(current_ava);
         if ( current_ava.length() < 1 ) { current_ava = "0"; }
 
@@ -981,13 +907,13 @@ bool move_stock_out(const std::string supplier,const std::string barcode, std::s
             pgbc.close();
             return false;
         }
-        JSON<std::string,std::string> jStock(resp);
-        std::string current_qty = jStock["quantity"];
+        nlohmann::json jStock = json_row(resp);
+        std::string current_qty = json_str(jStock, "quantity");
         OmniIndex::Utils::Utils::trim(current_qty);
         if ( current_qty.length() < 1 ) { current_qty = "0"; }
         long total_quantity = std::stol(current_qty);
 
-        std::string current_ava = jStock["available"];
+        std::string current_ava = json_str(jStock, "available");
         OmniIndex::Utils::Utils::trim(current_ava);
         if ( current_ava.length() < 1 ) { current_ava = "0"; }
         long total_available = std::stol(current_ava) - std::stol(quantity);
@@ -1036,13 +962,13 @@ bool move_stock_in(const std::string supplier,const std::string barcode, std::st
             pgbc.close();
             return false;
         }
-        JSON<std::string,std::string> jStock(resp);
-        std::string current_qty = jStock["quantity"];
+        nlohmann::json jStock = json_row(resp);
+        std::string current_qty = json_str(jStock, "quantity");
         OmniIndex::Utils::Utils::trim(current_qty);
         if ( current_qty.length() < 1 ) { current_qty = "0"; }
         long total_quantity = std::stol(current_qty);
 
-        std::string current_ava = jStock["available"];
+        std::string current_ava = json_str(jStock, "available");
         OmniIndex::Utils::Utils::trim(current_ava);
         if ( current_ava.length() < 1 ) { current_ava = "0"; }
         long total_available = std::stol(current_ava) + std::stol(quantity);
@@ -1102,8 +1028,8 @@ bool update_sale(const std::string bar_code, const std::string rs_price, std::st
             pgbc.close();
             return false;
         }
-        JSON<std::string,std::string> jSupplier(resp);
-        std::string supplier = jSupplier["supplier"];
+        nlohmann::json jSupplier = json_row(resp);
+        std::string supplier = json_str(jSupplier, "supplier");
         resp.assign(pgbc.runCommandParams(
             "SELECT quantity, running_total, completed FROM store.period_sales WHERE barcode = $1 ORDER BY sale_date DESC LIMIT 1",
             {bar_code}));
@@ -1112,7 +1038,7 @@ bool update_sale(const std::string bar_code, const std::string rs_price, std::st
             pgbc.close();
             return false;
         }
-        JSON<std::string,std::string> jProduct(resp);
+        nlohmann::json jProduct = json_row(resp);
         long total_quantity = 0;
         double total_rs_price = 0.00;
         // completed == "0" means the most recent period for this barcode was already
@@ -1124,13 +1050,13 @@ bool update_sale(const std::string bar_code, const std::string rs_price, std::st
         // row, so a sale of a barcode whose latest row was already closed out by cashup was
         // silently rejected. Now shares the same accumulate-and-insert path as any other
         // sale, just starting from a zero baseline instead of the previous row's totals.
-        if ( jProduct["completed"] != "0") {
-            std::string tmp = jProduct["quantity"];
+        if ( json_str(jProduct, "completed") != "0") {
+            std::string tmp = json_str(jProduct, "quantity");
             OmniIndex::Utils::Utils::trim(tmp);
             if ( tmp.length() > 0 ) {
                 total_quantity = std::stol(tmp);
             }
-            std::string tmp2 = jProduct["running_total"];
+            std::string tmp2 = json_str(jProduct, "running_total");
             OmniIndex::Utils::Utils::trim(tmp2);
             if ( tmp2.length() > 0 ) {
                 total_rs_price = std::stod(tmp2);
@@ -1188,10 +1114,12 @@ std::string get_price(const std::string barcde, const std::string user,
             return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
         }
         pgbc.close();
-        JSON<std::string,std::string> jSupplier(resp);
-        std::string rs_price = jSupplier["rs_price"]; 
+        nlohmann::json jSupplier = json_row(resp);
+        std::string rs_price = json_str(jSupplier, "rs_price");
         OmniIndex::Utils::Utils::trim(rs_price);
-        return "{\"rs_price\": \"" + rs_price + "\"}";
+        nlohmann::json out;
+        out["rs_price"] = rs_price;
+        return out.dump();
     }
     std::string error = pgbc.getLastError();
     pgbc.close();
@@ -1234,8 +1162,8 @@ std::string get_details(std::string barcode, const std::string user,
             return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
         }
 
-        JSON<std::string,std::string> jSupplier(resp);
-        std::string rs_price = jSupplier["rs_price"];
+        nlohmann::json jSupplier = json_row(resp);
+        std::string rs_price = json_str(jSupplier, "rs_price");
         OmniIndex::Utils::Utils::trim(rs_price);
         /** This may not be an actual stock item. In wihich case */
         if ( rs_price == "" ) {
@@ -1261,93 +1189,43 @@ std::string get_details(std::string barcode, const std::string user,
                 return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
             }
             
-            JSON<std::string,std::string> jSupplier(resp);
             pgbc.close();
-            std::cout << "{\"products_search_details\": [";
-            std::map<std::string, std::map<std::string, std::string> > m_totals;
-            for ( size_t sz_start = resp.find("}"); sz_start != std::string::npos; sz_start = resp.find("}")) {
-                std::map<std::string, std::string> m_details;
-                std::string iter = resp.substr(0, sz_start + 1);
-                iter = OmniIndex::Utils::Utils::replace(iter, "{{", "{");
-                resp.erase ( 0, sz_start + 1);     
-                JSON<std::string,std::string> jData(iter);
-                std::string product_description = jData["product_description"];
-                OmniIndex::Utils::Utils::trim(product_description); 
-                std::string price = jData["rs_price"];
-                OmniIndex::Utils::Utils::trim(price);                   
-                barcode = jData["barcode"];
-                OmniIndex::Utils::Utils::trim(barcode); 
-                std::string color = jData["color"];
-                OmniIndex::Utils::Utils::trim(color);      
-                std::string type = jData["type"];
-                OmniIndex::Utils::Utils::trim(type);
-                std::string supplier = jData["supplier"];
-                OmniIndex::Utils::Utils::trim(supplier);                
-                std::string quantity = jData["quantity"];
-                OmniIndex::Utils::Utils::trim(quantity);
-                std::string available = jData["available"];
-                OmniIndex::Utils::Utils::trim(available);
-                
-                std::cout << "{\"barcode\": \"" + barcode + "\",";
-                std::cout <<  "\"supplier\": \"" + supplier + "\",";
-                std::cout << "\"description\": \"" + product_description + "\",";
-                std::cout << "\"color\": \"" + color + "\",";
-                std::cout << "\"type\": \"" + type+ "\",";
-                std::cout << "\"stock\": \"" + quantity + "\",";
-                std::cout << "\"available\": \"" + available + "\",";
-                std::cout << "\"price\": \"" + price + "\"}";
-                if ( resp.find("\"barcode\"") != std::string::npos ) {
-                    std::cout << "," << std::flush;
-                } else {
-                    break; 
-                }
+            nlohmann::json items = nlohmann::json::array();
+            for ( const auto& jData : json_rows(resp) ) {
+                nlohmann::json item;
+                item["barcode"] = json_str(jData, "barcode");
+                item["supplier"] = json_str(jData, "supplier");
+                item["description"] = json_str(jData, "product_description");
+                item["color"] = json_str(jData, "color");
+                item["type"] = json_str(jData, "type");
+                item["stock"] = json_str(jData, "quantity");
+                item["available"] = json_str(jData, "available");
+                item["price"] = json_str(jData, "rs_price");
+                items.push_back(item);
             }
-            std::cout << "]}\n\n";
-            return ""; 
+            nlohmann::json out;
+            out["products_search_details"] = items;
+            std::cout << out.dump() << "\n\n";
+            return "";
         } else {
             pgbc.close();
-
-            std::cout << "{\"products_search_details\": [";
-            std::map<std::string, std::map<std::string, std::string> > m_totals;
-            for ( size_t sz_start = resp.find("}"); sz_start != std::string::npos; sz_start = resp.find("}")) {
-                std::map<std::string, std::string> m_details;
-                std::string iter = resp.substr(0, sz_start + 1);
-                iter = OmniIndex::Utils::Utils::replace(iter, "{{", "{");
-                resp.erase ( 0, sz_start + 1);     
-                JSON<std::string,std::string> jData(iter);
-                std::string product_description = jData["product_description"];
-                OmniIndex::Utils::Utils::trim(product_description); 
-                std::string price = jData["rs_price"];
-                OmniIndex::Utils::Utils::trim(price);                   
-                barcode = jData["barcode"];
-                OmniIndex::Utils::Utils::trim(barcode); 
-                std::string color = jData["color"];
-                OmniIndex::Utils::Utils::trim(color);      
-                std::string type = jData["type"];
-                OmniIndex::Utils::Utils::trim(type);
-                std::string supplier = jData["supplier"];
-                OmniIndex::Utils::Utils::trim(supplier);                
-                std::string quantity = jData["quantity"];
-                OmniIndex::Utils::Utils::trim(quantity);
-                std::string available = jData["available"];
-                OmniIndex::Utils::Utils::trim(available);
-                
-                std::cout << "{\"barcode\": \"" + barcode + "\",";
-                std::cout <<  "\"supplier\": \"" + supplier + "\",";
-                std::cout << "\"description\": \"" + product_description + "\",";
-                std::cout << "\"color\": \"" + color + "\",";
-                std::cout << "\"type\": \"" + type+ "\",";
-                std::cout << "\"stock\": \"" + quantity + "\",";
-                std::cout << "\"available\": \"" + available + "\",";
-                std::cout << "\"price\": \"" + price + "\"}";
-                if ( resp.find("\"barcode\"") != std::string::npos ) {
-                    std::cout << "," << std::flush;
-                } else {
-                    break; 
-                }
+            nlohmann::json items = nlohmann::json::array();
+            for ( const auto& jData : json_rows(resp) ) {
+                nlohmann::json item;
+                item["barcode"] = json_str(jData, "barcode");
+                item["supplier"] = json_str(jData, "supplier");
+                item["description"] = json_str(jData, "product_description");
+                item["color"] = json_str(jData, "color");
+                item["type"] = json_str(jData, "type");
+                item["stock"] = json_str(jData, "quantity");
+                item["available"] = json_str(jData, "available");
+                item["price"] = json_str(jData, "rs_price");
+                items.push_back(item);
             }
-            std::cout << "]}\n\n";
-            return ""; 
+            nlohmann::json out;
+            out["products_search_details"] = items;
+            std::cout << out.dump() << "\n\n";
+            return "";
         }
     }
     std::string error = pgbc.getLastError();
@@ -1374,10 +1252,12 @@ std::string get_stock_count(const std::string barcde, const std::string user,
             return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
         }
         pgbc.close();
-        JSON<std::string,std::string> jSupplier(resp);
-        std::string quantity = jSupplier["quantity"]; 
+        nlohmann::json jSupplier = json_row(resp);
+        std::string quantity = json_str(jSupplier, "quantity");
         OmniIndex::Utils::Utils::trim(quantity);
-        return "{\"quantity\": \"" + quantity + "\"}";
+        nlohmann::json out;
+        out["quantity"] = quantity;
+        return out.dump();
     }
     std::string error = pgbc.getLastError();
     pgbc.close();
@@ -1400,8 +1280,8 @@ std::string get_dashboard(const std::string user,
         pgbc.close();
         return "";
     }
-    JSON<std::string,std::string> jToday(resp);
-    std::string today = jToday["today_total"];
+    nlohmann::json jToday = json_row(resp);
+    std::string today = json_str(jToday, "today_total");
     OmniIndex::Utils::Utils::trim(today);
     size_t decimal = today.find(".");
     if ( decimal != std::string::npos ) {
@@ -1409,37 +1289,35 @@ std::string get_dashboard(const std::string user,
             today.erase ( decimal + 3);
         }
     }
-    std::string response = "{\"today_total\": \"" + today + "\"";
+    nlohmann::json out;
+    out["today_total"] = today;
     pgbc.close();
     sql = "SELECT takings, cashup_date FROM store.cash_up WHERE cashup_date > current_date - interval '7 days';";
     resp.assign(pgbc.runCommand(sql));
     warning = pgbc.getWarnings();
     error = pgbc.getLastError();
-    for ( size_t sz_start = resp.find("{"); sz_start != std::string::npos; sz_start = resp.find("{") ) {
-        resp.erase ( 0, sz_start + 1);
-        size_t sz_end = resp.find("}");
-        if ( sz_end != std::string::npos ) {
-            std::string tmp = resp.substr(0, sz_end + 1);
-            resp.erase(0, sz_end + 1);
-            JSON<std::string,std::string> jDailies(tmp);    
-            std::string daily = jDailies["today_total"];
-            OmniIndex::Utils::Utils::trim(daily);    
-            decimal = daily.find(".");
-            if ( decimal != std::string::npos ) {
-                if ( decimal < daily.length() + 2 ) {
-                    daily.erase ( decimal + 3);
-                }
-            }
-            std::string date = jDailies["cashup_date"]; // was "modified_date" — that key was never in this query's result set, so this was always blank
-            date = clean_value(date);
-            OmniIndex::Utils::Utils::trim(date);
-            if ( daily != "" || daily != "null" ) {
-                response += ", \"" + date + "\": \"" + daily + "\"";
+    for ( const auto& jDailies : json_rows(resp) ) {
+        // was "today_total" — this query selects "takings", not "today_total", so this
+        // was always blank.
+        std::string daily = json_str(jDailies, "takings");
+        OmniIndex::Utils::Utils::trim(daily);
+        decimal = daily.find(".");
+        if ( decimal != std::string::npos ) {
+            if ( decimal < daily.length() + 2 ) {
+                daily.erase ( decimal + 3);
             }
         }
+        std::string date = json_str(jDailies, "cashup_date"); // was "modified_date" — that key was never in this query's result set, so this was always blank
+        date = clean_value(date);
+        OmniIndex::Utils::Utils::trim(date);
+        // Note: this condition is always true (daily can't equal both "" and "null" at
+        // once) — a pre-existing logic bug (should very likely be &&), left as found since
+        // it's outside the scope of this JSON-layer migration.
+        if ( daily != "" || daily != "null" ) {
+            out[date] = daily;
+        }
     }
-    response += "}";
-    return response;
+    return out.dump();
   }
   return "{\"today_total\": \"\"}";
 }
@@ -1467,8 +1345,8 @@ std::string stock_take(const std::string barcode, const std::string user,
             pgbc.close();
             return "";
         }
-        JSON<std::string,std::string> jStock(resp);
-        std::string current_qty = jStock["quantity"];
+        nlohmann::json jStock = json_row(resp);
+        std::string current_qty = json_str(jStock, "quantity");
         OmniIndex::Utils::Utils::trim(current_qty);
         size_t sz_len = current_qty.length();
         if ( current_qty.length() < 1 ) {
@@ -1502,12 +1380,14 @@ std::string stock_take(const std::string barcode, const std::string user,
             pgbc.close();
             return "";
         }
-        JSON<std::string,std::string> jCurrentStock(resp);
-        current_qty = jCurrentStock["quantity"];
+        nlohmann::json jCurrentStock = json_row(resp);
+        current_qty = json_str(jCurrentStock, "quantity");
         OmniIndex::Utils::Utils::trim(current_qty);
         pgbc.close();
-        std::string resp_string = "{\"shelf\": \"" + std::to_string(total_quantity) + "\", \"stock\": \"" + current_qty + "\"}";        
-        return resp_string;
+        nlohmann::json out;
+        out["shelf"] = std::to_string(total_quantity);
+        out["stock"] = current_qty;
+        return out.dump();
     }
     return "";    
 }
@@ -1532,16 +1412,10 @@ bool complete_stock_take(const std::string user,
         }
         pgbc.close();/** We need to pool  */
         int false_pool_count = 0;
-        std::cout << "{\"stock_count_details\": [";
-        std::map<std::string, std::map<std::string, std::string> > m_totals;
-        for ( size_t sz_start = resp.find("}"); sz_start != std::string::npos; sz_start = resp.find("}")) {
-            std::map<std::string, std::string> m_details;
-            std::string iter = resp.substr(0, sz_start + 1);
-            iter = OmniIndex::Utils::Utils::replace(iter, "{{", "{");
-            resp.erase ( 0, sz_start + 1);
-            JSON<std::string,std::string> jStock(iter);
-            std::string barcode = jStock["barcode"];
-            std::string quantity = jStock["count"];
+        nlohmann::json items = nlohmann::json::array();
+        for ( const auto& jStock : json_rows(resp) ) {
+            std::string barcode = json_str(jStock, "barcode");
+            std::string quantity = json_str(jStock, "count");
             long count = 0;
             if ( quantity.length() < 1 ) {
                 count = 0;
@@ -1549,9 +1423,8 @@ bool complete_stock_take(const std::string user,
             } else {
                 count = std::stol(quantity);
             }
-            m_details.insert(std::pair<std::string, std::string>("counted", quantity));
             if ( false_pool_count == 0 ) {
-                pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database ); 
+                pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
             }
             sql = "SELECT p.supplier, p.product_description, p.color, p.type, s.quantity FROM store.products AS p JOIN store.stock AS s ON p.barcode = s.barcode WHERE p.barcode = $1";
             std::string resp_data(pgbc.runCommandParams(sql, {barcode}));
@@ -1560,9 +1433,9 @@ bool complete_stock_take(const std::string user,
                 pgbc.close();
                 false_pool_count = 0;
             }
-            
-            JSON<std::string,std::string> jData(resp_data);
-            std::string current_qty = jData["quantity"];
+
+            nlohmann::json jData = json_row(resp_data);
+            std::string current_qty = json_str(jData, "quantity");
             OmniIndex::Utils::Utils::trim(current_qty);
             long current_quantity = 0;
             if ( current_qty.length() < 1 ) {
@@ -1571,33 +1444,33 @@ bool complete_stock_take(const std::string user,
             } else {
                 current_quantity = std::stol(current_qty);
             }
-            std::string product_description = jData["product_description"];
-            OmniIndex::Utils::Utils::trim(product_description);           
-            std::string color = jData["color"];
-            OmniIndex::Utils::Utils::trim(color);      
-            std::string type = jData["type"];
+            std::string product_description = json_str(jData, "product_description");
+            OmniIndex::Utils::Utils::trim(product_description);
+            std::string color = json_str(jData, "color");
+            OmniIndex::Utils::Utils::trim(color);
+            std::string type = json_str(jData, "type");
             OmniIndex::Utils::Utils::trim(type);
-            std::string supplier = jData["supplier"]; // was "supplier_encrypt" — the query selects p.supplier, so that key was always blank
+            std::string supplier = json_str(jData, "supplier"); // was "supplier_encrypt" — the query selects p.supplier, so that key was always blank
             OmniIndex::Utils::Utils::trim(supplier);
-            std::string difference = std::to_string(current_quantity - count); 
+            std::string difference = std::to_string(current_quantity - count);
             if ( quantity != "0" && difference != "0" ) {
-                std::cout << "{\"barcode\": \"" + barcode + "\",";
-                std::cout <<  "\"supplier\": \"" + supplier + "\",";
-                std::cout << "\"description\": \"" + product_description + "\",";
-                std::cout << "\"color\": \"" + color + "\",";
-                std::cout << "\"type\": \"" + type+ "\",";
-                std::cout << "\"counted\": \"" + quantity + "\",";
-                std::cout << "\"stock\": \"" + current_qty + "\",";
-                std::cout << "\"descrepency\": \"" + difference + "\"}";
-                if ( resp.find("\"barcode\"") != std::string::npos ) {
-                    std::cout << "," << std::flush;
-                }
+                nlohmann::json item;
+                item["barcode"] = barcode;
+                item["supplier"] = supplier;
+                item["description"] = product_description;
+                item["color"] = color;
+                item["type"] = type;
+                item["counted"] = quantity;
+                item["stock"] = current_qty;
+                item["descrepency"] = difference;
+                items.push_back(item);
             }
-
         }
-        std::cout << "]}\n\n";
+        nlohmann::json out;
+        out["stock_count_details"] = items;
+        std::cout << out.dump() << "\n\n";
         return true;
-    } 
+    }
    // }
     return false;    
 }
@@ -1621,8 +1494,8 @@ bool add_user(const std::string user, const std::string new_user, const std::str
             pgbc.close();
             return false;
         }
-        JSON<std::string,std::string> jUser(resp);
-        std::string points = jUser["point_number"];
+        nlohmann::json jUser = json_row(resp);
+        std::string points = json_str(jUser, "point_number");
         if ( points.length() > 4 ) {
             pgbc.close();
             return false;
@@ -1651,8 +1524,8 @@ bool add_user(const std::string user, const std::string new_user, const std::str
             pgbc.close();
             return false;
         }
-        JSON<std::string,std::string> jNewUser(resp);
-        std::string new_points = jNewUser["point_number"];
+        nlohmann::json jNewUser = json_row(resp);
+        std::string new_points = json_str(jNewUser, "point_number");
         if ( new_points.length() < 3 ) {
             pgbc.close();
             return false;
@@ -1800,28 +1673,21 @@ std::string record_web_store_order(std::string order_id, std::string customer_em
         pgbc.close();
         
         /** Now process each item in the cart */
-        // Parse items JSON and update sales
-        // Format expected: [{"barcode":"xxx","price":"1.50","quantity":"2"},...]
-        std::string items_copy = items_json;
+        // items_json is client-supplied (the cart), e.g. [{"barcode":"xxx","price":"1.50","quantity":"2"},...]
         int success_count = 0;
         int error_count = 0;
-        
-        for ( size_t sz_start = items_copy.find("{"); sz_start != std::string::npos; sz_start = items_copy.find("{") ) {
-            items_copy.erase(0, sz_start + 1);
-            size_t sz_end = items_copy.find("}");
-            if ( sz_end != std::string::npos ) {
-                std::string item = items_copy.substr(0, sz_end);
-                items_copy.erase(0, sz_end + 1);
-                
-                JSON<std::string,std::string> jItem(item);
-                std::string barcode = jItem["barcode"];
-                std::string price = jItem["price"];
-                std::string quantity = jItem["quantity"];
-                
+
+        nlohmann::json jItems = nlohmann::json::parse(items_json, nullptr, false);
+        if ( jItems.is_array() ) {
+            for ( const auto& jItem : jItems ) {
+                std::string barcode = json_str(jItem, "barcode");
+                std::string price = json_str(jItem, "price");
+                std::string quantity = json_str(jItem, "quantity");
+
                 OmniIndex::Utils::Utils::trim(barcode);
                 OmniIndex::Utils::Utils::trim(price);
                 OmniIndex::Utils::Utils::trim(quantity);
-                
+
                 if ( barcode.length() > 0 && price.length() > 0 && quantity.length() > 0 ) {
                     if ( update_sale(barcode, price, quantity, "card", user, password, database) ) {
                         success_count++;
@@ -1831,8 +1697,16 @@ std::string record_web_store_order(std::string order_id, std::string customer_em
                 }
             }
         }
-        
-        return "{\"response\": \"Order recorded successfully\", \"order_id\": \"" + order_id + "\", \"items_recorded\": " + std::to_string(success_count) + ", \"items_failed\": " + std::to_string(error_count) + ", \"subtotal\": " + std::to_string(subtotal) + ", \"vat_amount\": " + std::to_string(vat_amount) + ", \"total\": " + total_value + "}";
+
+        nlohmann::json out;
+        out["response"] = "Order recorded successfully";
+        out["order_id"] = order_id;
+        out["items_recorded"] = success_count;
+        out["items_failed"] = error_count;
+        out["subtotal"] = subtotal;
+        out["vat_amount"] = vat_amount;
+        out["total"] = safe_stod(total_value);
+        return out.dump();
     } else {
         return "{\"error\": \"Database connection failed\"}";
     }
@@ -1861,52 +1735,31 @@ std::string get_order_history(std::string customer_email, const std::string user
         return "{\"orders\": []}";
     }
     
-    // Parse response and build JSON array
-    std::string orders_json = "{\"orders\": [";
-    
-    for ( size_t sz_start = resp.find("{"); sz_start != std::string::npos; sz_start = resp.find("{") ) {
-        resp.erase(0, sz_start + 1);
-        size_t sz_end = resp.find("}");
-        if ( sz_end != std::string::npos ) {
-            std::string order_record = resp.substr(0, sz_end);
-            resp.erase(0, sz_end + 1);
-            
-            JSON<std::string,std::string> jOrder(order_record);
-            std::string order_id = jOrder["order_id"];
-            std::string order_date = jOrder["order_date"];
-            std::string items = jOrder["items"];
-            std::string total_value = jOrder["total_value"];
-            std::string payment_method = jOrder["payment_method"];
-            std::string order_status = jOrder["order_status"];
-            std::string subtotal = jOrder["subtotal"];
-            std::string vat_amount = jOrder["vat_amount"];
-            
-            OmniIndex::Utils::Utils::trim(order_id);
-            OmniIndex::Utils::Utils::trim(order_date);
-            OmniIndex::Utils::Utils::trim(items);
-            OmniIndex::Utils::Utils::trim(total_value);
-            OmniIndex::Utils::Utils::trim(payment_method);
-            OmniIndex::Utils::Utils::trim(order_status);
-            OmniIndex::Utils::Utils::trim(subtotal);
-            OmniIndex::Utils::Utils::trim(vat_amount);
-            
-            if ( order_id.length() > 0 ) {
-                // Escape quotes in items JSON for proper JSON formatting
-                std::string escaped_items = items;
-                OmniIndex::Utils::Utils::replace(escaped_items, "\"", "\\\"");
-                
-                orders_json += "{\"order_id\": \"" + order_id + "\", \"order_date\": \"" + order_date + "\", \"items\": \"" + escaped_items + "\", \"total_value\": " + total_value + ", \"subtotal\": " + (subtotal.length() > 0 ? subtotal : "0") + ", \"vat_amount\": " + (vat_amount.length() > 0 ? vat_amount : "0") + ", \"payment_method\": \"" + payment_method + "\", \"order_status\": \"" + order_status + "\"},";
-            }
+    nlohmann::json orders = nlohmann::json::array();
+    for ( const auto& jOrder : json_rows(resp) ) {
+        std::string order_id = json_str(jOrder, "order_id");
+        OmniIndex::Utils::Utils::trim(order_id);
+        if ( order_id.length() > 0 ) {
+            nlohmann::json o;
+            o["order_id"] = order_id;
+            o["order_date"] = json_str(jOrder, "order_date");
+            // items is stored as JSON text in the DB; kept as a string field here (not
+            // nested) to match what the storefront's order-history JS already expects —
+            // just correctly escaped now via nlohmann instead of a naive quote-only replace
+            // that didn't handle backslashes/control characters.
+            o["items"] = json_str(jOrder, "items");
+            o["total_value"] = safe_stod(json_str(jOrder, "total_value"));
+            o["subtotal"] = safe_stod(json_str(jOrder, "subtotal"));
+            o["vat_amount"] = safe_stod(json_str(jOrder, "vat_amount"));
+            o["payment_method"] = json_str(jOrder, "payment_method");
+            o["order_status"] = json_str(jOrder, "order_status");
+            orders.push_back(o);
         }
     }
-    
-    // Remove trailing comma and close array
-    if ( orders_json.back() == ',' ) {
-        orders_json.pop_back();
-    }
-    orders_json += "]}";
-    
-    return orders_json;
+
+    nlohmann::json out;
+    out["orders"] = orders;
+    return out.dump();
 }
 
 /** Validate Cart Inventory */
@@ -1923,60 +1776,58 @@ std::string validate_cart_inventory(std::string items_json, const std::string us
         return "{\"error\": \"Database connection failed\"}";
     }
     
-    std::string items_copy = items_json;
-    std::string validation_json = "{\"valid\": true, \"items\": [";
     bool all_valid = true;
-    
-    for ( size_t sz_start = items_copy.find("{"); sz_start != std::string::npos; sz_start = items_copy.find("{") ) {
-        items_copy.erase(0, sz_start + 1);
-        size_t sz_end = items_copy.find("}");
-        if ( sz_end != std::string::npos ) {
-            std::string item = items_copy.substr(0, sz_end);
-            items_copy.erase(0, sz_end + 1);
-            
-            JSON<std::string,std::string> jItem(item);
-            std::string barcode = jItem["barcode"];
-            std::string requested_qty = jItem["quantity"];
-            
+    nlohmann::json items = nlohmann::json::array();
+
+    nlohmann::json jItems = nlohmann::json::parse(items_json, nullptr, false);
+    if ( jItems.is_array() ) {
+        for ( const auto& jItem : jItems ) {
+            std::string barcode = json_str(jItem, "barcode");
+            std::string requested_qty = json_str(jItem, "quantity");
+
             OmniIndex::Utils::Utils::trim(barcode);
             OmniIndex::Utils::Utils::trim(requested_qty);
-            
+
             if ( barcode.length() > 0 ) {
                 // Check stock availability
                 std::string sql = "SELECT quantity, product_description FROM store.stock AS s JOIN store.products AS p ON s.barcode = p.barcode WHERE s.barcode = $1";
                 std::string resp = pgbc.runCommandParams(sql, {barcode});
-                
-                JSON<std::string,std::string> jStock(resp);
-                std::string available_qty = jStock["quantity"];
-                std::string description = jStock["product_description"];
+
+                nlohmann::json jStock = json_row(resp);
+                std::string available_qty = json_str(jStock, "quantity");
+                std::string description = json_str(jStock, "product_description");
                 OmniIndex::Utils::Utils::trim(available_qty);
                 OmniIndex::Utils::Utils::trim(description);
-                
+
                 long available = 0;
-                long requested = std::stol(requested_qty);
-                
+                long requested = safe_stol(requested_qty);
+
                 if ( available_qty.length() > 0 ) {
                     available = std::stol(available_qty);
                 }
-                
+
                 bool item_valid = (available >= requested);
                 if ( !item_valid ) {
                     all_valid = false;
                 }
-                
-                validation_json += "{\"barcode\": \"" + barcode + "\", \"available\": " + std::to_string(available) + ", \"requested\": " + requested_qty + ", \"valid\": " + (item_valid ? "true" : "false") + ", \"description\": \"" + description + "\"},";
+
+                nlohmann::json entry;
+                entry["barcode"] = barcode;
+                entry["available"] = available;
+                entry["requested"] = requested;
+                entry["valid"] = item_valid;
+                entry["description"] = description;
+                items.push_back(entry);
             }
         }
     }
-    
+
     pgbc.close();
-    
-    if ( validation_json.back() == ',' ) {
-        validation_json.pop_back();
-    }
-    validation_json += "], \"valid\": " + (all_valid ? std::string("true") : std::string("false")) + "}";
-    
-    return validation_json;
+
+    nlohmann::json out;
+    out["valid"] = all_valid;
+    out["items"] = items;
+    return out.dump();
 }
 
 /** Sales Report - Detailed sales by date range */
@@ -2013,45 +1864,44 @@ std::string get_sales_report(std::string start_date, std::string end_date, const
         return "{\"report_type\": \"sales\", \"period\": \"" + start_date + " to " + end_date + "\", \"total_revenue\": 0, \"items\": []}";
     }
     
-    std::string sales_json = "{\"report_type\": \"sales\", \"period\": \"" + start_date + " to " + end_date + "\", \"items\": [";
+    nlohmann::json items = nlohmann::json::array();
     double total_revenue = 0;
     int total_items = 0;
-    
-    for ( size_t sz_start = resp.find("{"); sz_start != std::string::npos; sz_start = resp.find("{") ) {
-        resp.erase(0, sz_start + 1);
-        size_t sz_end = resp.find("}");
-        if ( sz_end != std::string::npos ) {
-            std::string item = resp.substr(0, sz_end);
-            resp.erase(0, sz_end + 1);
-            
-            JSON<std::string,std::string> jItem(item);
-            std::string barcode = jItem["barcode"];
-            std::string description = jItem["product_description"];
-            std::string quantity = jItem["total_quantity"];
-            std::string revenue = jItem["total_revenue"];
-            
-            OmniIndex::Utils::Utils::trim(barcode);
-            OmniIndex::Utils::Utils::trim(description);
-            OmniIndex::Utils::Utils::trim(quantity);
-            OmniIndex::Utils::Utils::trim(revenue);
-            
-            if ( barcode.length() > 0 ) {
-                double qty = std::stod(quantity);
-                double rev = std::stod(revenue);
-                total_revenue += rev;
-                total_items += (int)qty;
-                
-                sales_json += "{\"barcode\": \"" + barcode + "\", \"description\": \"" + description + "\", \"quantity\": " + quantity + ", \"revenue\": " + revenue + ", \"unit_price\": " + std::to_string(rev / qty) + "},";
-            }
+
+    for ( const auto& jItem : json_rows(resp) ) {
+        std::string barcode = json_str(jItem, "barcode");
+        std::string description = json_str(jItem, "product_description");
+        std::string quantity = json_str(jItem, "total_quantity");
+        std::string revenue = json_str(jItem, "total_revenue");
+
+        OmniIndex::Utils::Utils::trim(barcode);
+        OmniIndex::Utils::Utils::trim(description);
+        OmniIndex::Utils::Utils::trim(quantity);
+        OmniIndex::Utils::Utils::trim(revenue);
+
+        if ( barcode.length() > 0 ) {
+            double qty = safe_stod(quantity);
+            double rev = safe_stod(revenue);
+            total_revenue += rev;
+            total_items += (int)qty;
+
+            nlohmann::json item;
+            item["barcode"] = barcode;
+            item["description"] = description;
+            item["quantity"] = qty;
+            item["revenue"] = rev;
+            item["unit_price"] = qty != 0 ? (rev / qty) : 0;
+            items.push_back(item);
         }
     }
-    
-    if ( sales_json.back() == ',' ) {
-        sales_json.pop_back();
-    }
-    sales_json += "], \"total_revenue\": " + std::to_string(total_revenue) + ", \"total_items_sold\": " + std::to_string(total_items) + "}";
-    
-    return sales_json;
+
+    nlohmann::json out;
+    out["report_type"] = "sales";
+    out["period"] = start_date + " to " + end_date;
+    out["items"] = items;
+    out["total_revenue"] = total_revenue;
+    out["total_items_sold"] = total_items;
+    return out.dump();
 }
 
 /** Revenue Report - Accounting-focused revenue analysis */
@@ -2072,35 +1922,31 @@ std::string get_revenue_report(std::string start_date, std::string end_date, con
     std::string sql = "SELECT COUNT(DISTINCT email) AS customer_count, COUNT(*) AS transaction_count, SUM(total_value) AS gross_revenue, AVG(total_value) AS avg_transaction FROM store.customer_orders WHERE order_date >= $1 AND order_date <= $2";
     std::string resp = pgbc.runCommandParams(sql, {start_date, end_date});
     
-    JSON<std::string,std::string> jMetrics(resp);
-    std::string customer_count = jMetrics["customer_count"];
-    std::string transaction_count = jMetrics["transaction_count"];
-    std::string gross_revenue = jMetrics["gross_revenue"];
-    std::string avg_transaction = jMetrics["avg_transaction"];
-    
-    OmniIndex::Utils::Utils::trim(customer_count);
-    OmniIndex::Utils::Utils::trim(transaction_count);
-    OmniIndex::Utils::Utils::trim(gross_revenue);
-    OmniIndex::Utils::Utils::trim(avg_transaction);
-    
+    nlohmann::json jMetrics = json_row(resp);
+    long customer_count = safe_stol(json_str(jMetrics, "customer_count"));
+    long transaction_count = safe_stol(json_str(jMetrics, "transaction_count"));
+    std::string gross_revenue = json_str(jMetrics, "gross_revenue");
+    double avg_transaction = safe_stod(json_str(jMetrics, "avg_transaction"));
+
     pgbc.close();
-    
+
     // Assuming 15% COGS for accounting purposes (this can be configured)
     double revenue = safe_stod(gross_revenue);
     double cogs = revenue * 0.15;  // Cost of Goods Sold
     double gross_profit = revenue - cogs;
     double profit_margin = revenue > 0 ? (gross_profit / revenue * 100) : 0;
-    
-    std::string revenue_json = "{\"report_type\": \"revenue\", \"period\": \"" + start_date + " to " + end_date + "\", ";
-    revenue_json += "\"gross_revenue\": " + std::to_string(revenue) + ", ";
-    revenue_json += "\"cost_of_goods_sold\": " + std::to_string(cogs) + ", ";
-    revenue_json += "\"gross_profit\": " + std::to_string(gross_profit) + ", ";
-    revenue_json += "\"profit_margin_percent\": " + std::to_string(profit_margin) + ", ";
-    revenue_json += "\"transactions\": " + transaction_count + ", ";
-    revenue_json += "\"customers\": " + customer_count + ", ";
-    revenue_json += "\"avg_transaction_value\": " + avg_transaction + "}";
-    
-    return revenue_json;
+
+    nlohmann::json out;
+    out["report_type"] = "revenue";
+    out["period"] = start_date + " to " + end_date;
+    out["gross_revenue"] = revenue;
+    out["cost_of_goods_sold"] = cogs;
+    out["gross_profit"] = gross_profit;
+    out["profit_margin_percent"] = profit_margin;
+    out["transactions"] = transaction_count;
+    out["customers"] = customer_count;
+    out["avg_transaction_value"] = avg_transaction;
+    return out.dump();
 }
 
 /** Inventory Report - Current stock valuation and metrics */
@@ -2125,49 +1971,48 @@ std::string get_inventory_report(const std::string user, const std::string passw
         return "{\"report_type\": \"inventory\", \"items\": [], \"total_inventory_value\": 0}";
     }
     
-    std::string inventory_json = "{\"report_type\": \"inventory\", \"items\": [";
+    nlohmann::json items = nlohmann::json::array();
     double total_value = 0;
     int total_items = 0;
-    
-    for ( size_t sz_start = resp.find("{"); sz_start != std::string::npos; sz_start = resp.find("{") ) {
-        resp.erase(0, sz_start + 1);
-        size_t sz_end = resp.find("}");
-        if ( sz_end != std::string::npos ) {
-            std::string item = resp.substr(0, sz_end);
-            resp.erase(0, sz_end + 1);
-            
-            JSON<std::string,std::string> jItem(item);
-            std::string barcode = jItem["barcode"];
-            std::string description = jItem["product_description"];
-            std::string quantity = jItem["quantity"];
-            std::string price = jItem["rs_price"]; // was "price" — the query selects p.rs_price, so this was always blank (invalid JSON: "unit_price": ,)
-            std::string inv_value = jItem["inventory_value"];
-            std::string supplier = jItem["supplier"]; // was "supplier_encrypt" — the query selects p.supplier, so that key was always blank
-            
-            OmniIndex::Utils::Utils::trim(barcode);
-            OmniIndex::Utils::Utils::trim(description);
-            OmniIndex::Utils::Utils::trim(quantity);
-            OmniIndex::Utils::Utils::trim(price);
-            OmniIndex::Utils::Utils::trim(inv_value);
-            OmniIndex::Utils::Utils::trim(supplier);
-            
-            if ( barcode.length() > 0 && quantity.length() > 0 ) {
-                int qty = (int) safe_stol(quantity);
-                double val = safe_stod(inv_value);
-                total_value += val;
-                total_items += qty;
-                
-                inventory_json += "{\"barcode\": \"" + barcode + "\", \"description\": \"" + description + "\", \"quantity\": " + quantity + ", \"unit_price\": " + price + ", \"total_value\": " + inv_value + ", \"supplier\": \"" + supplier + "\"},";
-            }
+
+    for ( const auto& jItem : json_rows(resp) ) {
+        std::string barcode = json_str(jItem, "barcode");
+        std::string description = json_str(jItem, "product_description");
+        std::string quantity = json_str(jItem, "quantity");
+        std::string price = json_str(jItem, "rs_price"); // was "price" — the query selects p.rs_price, so this was always blank (invalid JSON: "unit_price": ,)
+        std::string inv_value = json_str(jItem, "inventory_value");
+        std::string supplier = json_str(jItem, "supplier"); // was "supplier_encrypt" — the query selects p.supplier, so that key was always blank
+
+        OmniIndex::Utils::Utils::trim(barcode);
+        OmniIndex::Utils::Utils::trim(description);
+        OmniIndex::Utils::Utils::trim(quantity);
+        OmniIndex::Utils::Utils::trim(price);
+        OmniIndex::Utils::Utils::trim(inv_value);
+        OmniIndex::Utils::Utils::trim(supplier);
+
+        if ( barcode.length() > 0 && quantity.length() > 0 ) {
+            int qty = (int) safe_stol(quantity);
+            double val = safe_stod(inv_value);
+            total_value += val;
+            total_items += qty;
+
+            nlohmann::json item;
+            item["barcode"] = barcode;
+            item["description"] = description;
+            item["quantity"] = qty;
+            item["unit_price"] = safe_stod(price);
+            item["total_value"] = val;
+            item["supplier"] = supplier;
+            items.push_back(item);
         }
     }
-    
-    if ( inventory_json.back() == ',' ) {
-        inventory_json.pop_back();
-    }
-    inventory_json += "], \"total_inventory_value\": " + std::to_string(total_value) + ", \"total_items\": " + std::to_string(total_items) + "}";
 
-    return inventory_json;
+    nlohmann::json out;
+    out["report_type"] = "inventory";
+    out["items"] = items;
+    out["total_inventory_value"] = total_value;
+    out["total_items"] = total_items;
+    return out.dump();
 }
 
 /** AI reporting engine: reads real stock/sales data out of the database and asks Boudica
@@ -2188,7 +2033,10 @@ std::string get_stock_analysis(const std::string user, const std::string passwor
     if ( analysis_text.empty() ) {
         analysis_text = "Could not get a response from the AI system.";
     }
-    return "{\"analysis\": \"" + json_escape(analysis_text) + "\", \"data\": " + inventory_json + "}";
+    nlohmann::json out;
+    out["analysis"] = analysis_text;
+    out["data"] = json_parse_or_raw(inventory_json);
+    return out.dump();
 }
 
 static inline
@@ -2205,7 +2053,10 @@ std::string get_sales_analysis(std::string start_date, std::string end_date, con
     if ( analysis_text.empty() ) {
         analysis_text = "Could not get a response from the AI system.";
     }
-    return "{\"analysis\": \"" + json_escape(analysis_text) + "\", \"data\": " + sales_json + "}";
+    nlohmann::json out;
+    out["analysis"] = analysis_text;
+    out["data"] = json_parse_or_raw(sales_json);
+    return out.dump();
 }
 
 /** Tax Summary - Sales tax data for accounting */
@@ -2227,25 +2078,21 @@ std::string get_tax_summary(std::string start_date, std::string end_date, const 
     std::string resp = pgbc.runCommandParams(sql, {start_date, end_date});
     pgbc.close();
     
-    JSON<std::string,std::string> jData(resp);
-    std::string order_count = jData["order_count"];
-    std::string total_sales = jData["total_sales"];
-    
-    OmniIndex::Utils::Utils::trim(order_count);
-    OmniIndex::Utils::Utils::trim(total_sales);
-    
-    double sales = safe_stod(total_sales);
+    nlohmann::json jData = json_row(resp);
+    long order_count = safe_stol(json_str(jData, "order_count"));
+    double sales = safe_stod(json_str(jData, "total_sales"));
     double vat_20pct = sales * 0.20;  // 20% VAT (UK standard rate)
     double vat_5pct = sales * 0.05;   // 5% VAT (reduced rate)
-    
-    std::string tax_json = "{\"report_type\": \"tax_summary\", \"period\": \"" + start_date + " to " + end_date + "\", ";
-    tax_json += "\"orders\": " + order_count + ", ";
-    tax_json += "\"total_sales\": " + std::to_string(sales) + ", ";
-    tax_json += "\"vat_20pct\": " + std::to_string(vat_20pct) + ", ";
-    tax_json += "\"vat_5pct\": " + std::to_string(vat_5pct) + ", ";
-    tax_json += "\"total_vat_estimate\": " + std::to_string(vat_20pct) + "}";
-    
-    return tax_json;
+
+    nlohmann::json out;
+    out["report_type"] = "tax_summary";
+    out["period"] = start_date + " to " + end_date;
+    out["orders"] = order_count;
+    out["total_sales"] = sales;
+    out["vat_20pct"] = vat_20pct;
+    out["vat_5pct"] = vat_5pct;
+    out["total_vat_estimate"] = vat_20pct;
+    return out.dump();
 }
 
 /** Receipt Generator - Retrieve and format order as receipt */
@@ -2273,101 +2120,88 @@ std::string get_receipt(std::string order_id, const std::string user, const std:
         return "{\"error\": \"Order not found\"}";
     }
     
-    JSON<std::string,std::string> jOrder(resp);
-    std::string order_email = jOrder["email"];
-    std::string items_json = jOrder["items"];
-    std::string total_value = jOrder["total_value"];
-    std::string payment_method = jOrder["payment_method"];
-    std::string order_status = jOrder["order_status"];
-    std::string order_date = jOrder["order_date"];
-    std::string stored_subtotal = jOrder["subtotal"];
-    std::string stored_vat_amount = jOrder["vat_amount"];
-    std::string stored_vat_rate = jOrder["vat_rate"];
-    
-    OmniIndex::Utils::Utils::trim(order_email);
-    OmniIndex::Utils::Utils::trim(items_json);
-    OmniIndex::Utils::Utils::trim(total_value);
-    OmniIndex::Utils::Utils::trim(payment_method);
-    OmniIndex::Utils::Utils::trim(order_status);
-    OmniIndex::Utils::Utils::trim(order_date);
-    OmniIndex::Utils::Utils::trim(stored_subtotal);
-    OmniIndex::Utils::Utils::trim(stored_vat_amount);
-    OmniIndex::Utils::Utils::trim(stored_vat_rate);
-    
-    // Parse items to get product details
-    std::string receipt_json = "{\"receipt\": {";
-    receipt_json += "\"order_id\": \"" + order_id + "\", ";
-    receipt_json += "\"customer_email\": \"" + order_email + "\", ";
-    receipt_json += "\"order_date\": \"" + order_date + "\", ";
-    receipt_json += "\"payment_method\": \"" + payment_method + "\", ";
-    receipt_json += "\"order_status\": \"" + order_status + "\", ";
-    receipt_json += "\"items\": [";
-    
-    // Parse items array from JSON string
+    nlohmann::json jOrder = json_row(resp);
+    std::string order_email = json_str(jOrder, "email");
+    std::string items_json = json_str(jOrder, "items");
+    std::string total_value = json_str(jOrder, "total_value");
+    std::string payment_method = json_str(jOrder, "payment_method");
+    std::string order_status = json_str(jOrder, "order_status");
+    std::string order_date = json_str(jOrder, "order_date");
+    std::string stored_subtotal = json_str(jOrder, "subtotal");
+    std::string stored_vat_amount = json_str(jOrder, "vat_amount");
+    std::string stored_vat_rate = json_str(jOrder, "vat_rate");
+
+    nlohmann::json items = nlohmann::json::array();
     double subtotal = 0;
     int item_count = 0;
-    
-    for ( size_t sz_start = items_json.find("{"); sz_start != std::string::npos; sz_start = items_json.find("{") ) {
-        items_json.erase(0, sz_start + 1);
-        size_t sz_end = items_json.find("}");
-        if ( sz_end != std::string::npos ) {
-            std::string item = items_json.substr(0, sz_end);
-            items_json.erase(0, sz_end + 1);
-            
-            JSON<std::string,std::string> jItem(item);
-            std::string barcode = jItem["barcode"];
-            std::string quantity = jItem["quantity"];
-            std::string price = jItem["price"];
-            
+
+    nlohmann::json jItems = nlohmann::json::parse(items_json, nullptr, false);
+    if ( jItems.is_array() ) {
+        for ( const auto& jItem : jItems ) {
+            std::string barcode = json_str(jItem, "barcode");
+            std::string quantity = json_str(jItem, "quantity");
+            std::string price = json_str(jItem, "price");
+
             OmniIndex::Utils::Utils::trim(barcode);
             OmniIndex::Utils::Utils::trim(quantity);
             OmniIndex::Utils::Utils::trim(price);
-            
+
             if ( barcode.length() > 0 ) {
                 // Get product description
                 std::string prod_sql = "SELECT product_description FROM store.products WHERE barcode = $1 LIMIT 1";
                 std::string prod_resp = pgbc.runCommandParams(prod_sql, {barcode});
-                
-                JSON<std::string,std::string> jProd(prod_resp);
-                std::string description = jProd["product_description"];
+
+                nlohmann::json jProd = json_row(prod_resp);
+                std::string description = json_str(jProd, "product_description");
                 OmniIndex::Utils::Utils::trim(description);
-                
-                double qty = std::stod(quantity);
-                double prc = std::stod(price);
+
+                double qty = safe_stod(quantity);
+                double prc = safe_stod(price);
                 double line_total = qty * prc;
                 subtotal += line_total;
-                
-                receipt_json += "{\"barcode\": \"" + barcode + "\", \"description\": \"" + description + "\", \"quantity\": " + quantity + ", \"unit_price\": " + price + ", \"line_total\": " + std::to_string(line_total) + "},";
+
+                nlohmann::json item;
+                item["barcode"] = barcode;
+                item["description"] = description;
+                item["quantity"] = qty;
+                item["unit_price"] = prc;
+                item["line_total"] = line_total;
+                items.push_back(item);
                 item_count++;
             }
         }
     }
-    
-    if ( receipt_json.back() == ',' ) {
-        receipt_json.pop_back();
-    }
-    
-    double total = std::stod(total_value);
-    double vat_amount = stored_vat_amount.length() > 0 ? std::stod(stored_vat_amount) : 0;
-    double vat_rate = stored_vat_rate.length() > 0 ? std::stod(stored_vat_rate) : 0.20;
-    double subtotal_val = stored_subtotal.length() > 0 ? std::stod(stored_subtotal) : (total - vat_amount);
-    
+
+    double total = safe_stod(total_value);
+    double vat_amount = stored_vat_amount.length() > 0 ? safe_stod(stored_vat_amount) : 0;
+    double vat_rate = stored_vat_rate.length() > 0 ? safe_stod(stored_vat_rate) : 0.20;
+    double subtotal_val = stored_subtotal.length() > 0 ? safe_stod(stored_subtotal) : (total - vat_amount);
+
     // If VAT wasn't stored, calculate it
     if ( vat_amount == 0 && subtotal_val == 0 ) {
         vat_amount = total * vat_rate / (1 + vat_rate);
         subtotal_val = total - vat_amount;
     }
-    
-    receipt_json += "], ";
-    receipt_json += "\"subtotal\": " + std::to_string(subtotal_val) + ", ";
-    receipt_json += "\"vat_amount\": " + std::to_string(vat_amount) + ", ";
-    receipt_json += "\"vat_rate_percent\": " + std::to_string(vat_rate * 100) + ", ";
-    receipt_json += "\"total\": " + std::to_string(total) + ", ";
-    receipt_json += "\"item_count\": " + std::to_string(item_count) + "}}";
-    
+
+    nlohmann::json receipt;
+    receipt["order_id"] = order_id;
+    receipt["customer_email"] = order_email;
+    receipt["order_date"] = order_date;
+    receipt["payment_method"] = payment_method;
+    receipt["order_status"] = order_status;
+    receipt["items"] = items;
+    receipt["subtotal"] = subtotal_val;
+    receipt["vat_amount"] = vat_amount;
+    receipt["vat_rate_percent"] = vat_rate * 100;
+    receipt["total"] = total;
+    receipt["item_count"] = item_count;
+
+    nlohmann::json out;
+    out["receipt"] = receipt;
+
     pgbc.close();
-    
-    return receipt_json;
+
+    return out.dump();
 }
 
 int main (int argc, char** argv) {
@@ -2570,21 +2404,21 @@ int main (int argc, char** argv) {
             std::cerr << "[LOGIN] authenticate() returned" << std::endl;
             
             if (!auth_result.empty() && auth_result["authenticated"] == "true") {
-                std::cout << "{"
-                         << "\"success\": true, "
-                         << "\"user_id\": " << auth_result["id"] << ", "
-                         << "\"username\": \"" << auth_result["username"] << "\", "
-                         << "\"email\": \"" << auth_result["email"] << "\", "
-                         << "\"role\": \"" << auth_result["role"] << "\", "
-                         << "\"full_name\": \"" << auth_result["full_name"] << "\""
-                         << "}\n\n";
+                nlohmann::json j;
+                j["success"] = true;
+                j["user_id"] = safe_stol(auth_result["id"]);
+                j["username"] = auth_result["username"];
+                j["email"] = auth_result["email"];
+                j["role"] = auth_result["role"];
+                j["full_name"] = auth_result["full_name"];
+                std::cout << j.dump() << "\n\n";
                 std::cout.flush();
             } else {
-                std::cout << "{\"error\": \"Invalid username or password\"}\n\n";
+                emit_json_error("Invalid username or password");
                 std::cout.flush();
             }
         } catch (const std::exception& e) {
-            std::cout << "{\"error\": \"Authentication error: " << e.what() << "\"}\n\n";
+            emit_json_error(std::string("Authentication error: ") + e.what());
             std::cout.flush();
         }
         return 0;
@@ -2592,11 +2426,11 @@ int main (int argc, char** argv) {
     
     // All other commands require user credentials validation
     std::string user = check_user_credentials(email_address, password);
-    JSON<std::string,std::string> jResp(user);
-    JSON<std::string,std::string> jUser(jResp["response"]);    
+    nlohmann::json jResp = json_row(user);
+    nlohmann::json jUser = json_row(jResp.value("response", nlohmann::json::array()));
     // Reject if user is NOT active
-    if ( jUser["is_active"] != "t" && jUser["is_active"] != "true" && jUser["is_active"] != "1" ) {
-        std::cout << "{\"error\": \"User is not active on the system. Please check your username and password.\"}\n\n";
+    if ( json_str(jUser, "is_active") != "t" && json_str(jUser, "is_active") != "true" && json_str(jUser, "is_active") != "1" ) {
+        emit_json_error("User is not active on the system. Please check your username and password.");
         return 0;
     }
     // All users connect to postgres database
@@ -2650,15 +2484,15 @@ int main (int argc, char** argv) {
             supplier = url_decode(supplier);
         }
         if ( barcode == "" || description == "" || rs_price == "" || supplier == "" ) {
-            std::cout << "{\"error\": \"Please provide all of the required fields.\"}\n\n";
-            return 0;            
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
         }
-        if ( add_product(supplier, barcode, rs_price, description, jUser["username"], password, database) ) {
-            std::cout << "{\"response\": \"" + barcode + ", has been added to the system.\"}\n\n";
-            return 0;  
+        if ( add_product(supplier, barcode, rs_price, description, json_str(jUser, "username"), password, database) ) {
+            emit_json_response(barcode + ", has been added to the system.");
+            return 0;
         } else {
-            std::cout << "{\"error\": \"" + barcode + ", failed to be added to the system.\"}\n\n";
-            return 0;              
+            emit_json_error(barcode + ", failed to be added to the system.");
+            return 0;
         }
     }
     else if ( command == "updatestock" ) {
@@ -2681,15 +2515,15 @@ int main (int argc, char** argv) {
             rs_price = url_decode(rs_price);
         }
         if ( barcode == "" || quantity == "" ) {
-            std::cout << "{\"error\": \"Please provide all of the required fields.\"}\n\n";
-            return 0;            
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
         }
-        if ( update_stock(barcode, quantity, jUser["username"], password, database) ) {
-            std::cout << "{\"response\": \"" + barcode + ", has been updated on the system.\"}\n\n";
-            return 0;  
+        if ( update_stock(barcode, quantity, json_str(jUser, "username"), password, database) ) {
+            emit_json_response(barcode + ", has been updated on the system.");
+            return 0;
         } else {
-            std::cout << "{\"error\": \"" + barcode + ", failed to be updated on the system.\"}\n\n";
-            return 0;              
+            emit_json_error(barcode + ", failed to be updated on the system.");
+            return 0;
         }
     }
     else if ( command == "addsupplier" ) {
@@ -2725,24 +2559,24 @@ int main (int argc, char** argv) {
         }                          
 
         if ( supplier == "" || telephone == "" || address == "" || postcode == "" ) {
-            std::cout << "{\"error\": \"Please provide all of the required fields.\"}\n\n";
-            return 0;            
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
         }
-        if ( add_supplier(supplier, telephone, address, postcode, supplier_email, jUser["username"], password, database) ) {
-            std::cout << "{\"response\": \"" + supplier + ", has been added to the system.\"}\n\n";
-            return 0;  
+        if ( add_supplier(supplier, telephone, address, postcode, supplier_email, json_str(jUser, "username"), password, database) ) {
+            emit_json_response(supplier + ", has been added to the system.");
+            return 0;
         } else {
-            std::cout << "{\"error\": \"" + supplier + ", failed to be added to the system.\"}\n\n";
-            return 0;              
-        }        
+            emit_json_error(supplier + ", failed to be added to the system.");
+            return 0;
+        }
     }
     else if ( command == "getsupplierlist" ) {
-        std::string response = get_supplier_list(jUser["username"], password, database);
+        std::string response = get_supplier_list(json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;           
     }
     else if ( command == "getworkshops" ) {
-        std::string response = get_workshops(jUser["username"], password, database);
+        std::string response = get_workshops(json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;           
     }
@@ -2753,12 +2587,12 @@ int main (int argc, char** argv) {
             float_value = it->second;
             float_value = url_decode(float_value);
         }
-        if ( set_float(float_value, jUser["username"], password, database) ) {
-            std::cout << "{\"response\": \"You float has been added.\"}\n\n";
-            return 0;  
+        if ( set_float(float_value, json_str(jUser, "username"), password, database) ) {
+            emit_json_response("You float has been added.");
+            return 0;
         }
-        std::cout << "{\"error\": \"Float could not be added. Please retry.\"}\n\n";
-        return 0;        
+        emit_json_error("Float could not be added. Please retry.");
+        return 0;
     }
     else if ( command == "pricelookup" ) {
          std::string barcode;
@@ -2768,10 +2602,10 @@ int main (int argc, char** argv) {
             barcode = url_decode(barcode);
         }  
         if ( barcode == "" ) {
-            std::cout << "{\"error\": \"Please provide all of the required fields.}\n\n";
-            return 0;            
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
         }
-        std::string response = get_price(barcode, jUser["username"], password, database);
+        std::string response = get_price(barcode, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;               
     }
@@ -2783,10 +2617,10 @@ int main (int argc, char** argv) {
             barcode = url_decode(barcode);
         }  
         if ( barcode == "" ) {
-            std::cout << "{\"error\": \"Please provide all of the required fields.}\n\n";
-            return 0;            
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
         }
-        std::string response = get_details(barcode, jUser["username"], password, database);
+        std::string response = get_details(barcode, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;               
     }    
@@ -2798,10 +2632,10 @@ int main (int argc, char** argv) {
             barcode = url_decode(barcode);
         }  
         if ( barcode == "" ) {
-            std::cout << "{\"error\": \"Please provide all of the required fields.}\n\n";
-            return 0;            
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
         }
-        std::string response = get_stock_count(barcode, jUser["username"], password, database);
+        std::string response = get_stock_count(barcode, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;               
     }    
@@ -2824,8 +2658,8 @@ int main (int argc, char** argv) {
             rs_price = url_decode(rs_price);
         } 
         if ( rs_price == "" ) {
-            std::cout << "{\"error\": \"Please provide all of the required fields.}\n\n";
-            return 0;            
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
         }
         std::string quantity;
         it = queryData.find("quantity");
@@ -2842,20 +2676,20 @@ int main (int argc, char** argv) {
         if ( type == "" ) {
             type = "undisclosed";          
         }
-        if ( update_sale(barcode, rs_price, quantity, type, jUser["username"], password,  database) ) {
-            std::cout << "{\"response\": \"Sale complete.}\n\n";
-            return 0;  
-        }                        
-        std::cout << "{\"error\": \"Sales system failed to update. Please keep details amd manually add at the end of teh day.}\n\n";
-        return 0;            
+        if ( update_sale(barcode, rs_price, quantity, type, json_str(jUser, "username"), password,  database) ) {
+            emit_json_response("Sale complete.");
+            return 0;
+        }
+        emit_json_error("Sales system failed to update. Please keep details amd manually add at the end of teh day.");
+        return 0;
     }
     else if ( command == "cashup" ) {
-        std::string response = cash_up(jUser["username"], password,  database);
+        std::string response = cash_up(json_str(jUser, "username"), password,  database);
         std::cout << response << "\n\n";
         return 0;  
     }
     else if ( command == "getdashboard" ) {
-        std::string response = get_dashboard(jUser["username"], password, database);
+        std::string response = get_dashboard(json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;      
     }
@@ -2866,7 +2700,7 @@ int main (int argc, char** argv) {
             barcode = it->second;
             barcode = url_decode(barcode);
         }        
-        std::string stock = stock_take(barcode, jUser["username"], password, database);
+        std::string stock = stock_take(barcode, json_str(jUser, "username"), password, database);
         if ( stock == "" ) {
             std::cout << "{\"shelf\": \"not counted\", \"stock\": \"not counted\"}\n\n";
         } else {
@@ -2875,13 +2709,13 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "completestocktake" ) {      
-        if ( complete_stock_take(jUser["username"], password, database) ) {
-            
+        if ( complete_stock_take(json_str(jUser, "username"), password, database) ) {
+
         } else {
-            std::cout << "{\"error\": \"Update failed\"}\n\n";
+            emit_json_error("Update failed");
         }
         return 0;
-    }    
+    }
     else if ( command == "addinvoice" ) {
         //queryString="username=sibain@omniindex.io&command=addinvoice&password=Ch35t3r&suppleier=James C Brett Ltd&details=&amount=&paid=false&invoicenumber=0168979";  
 
@@ -2921,13 +2755,13 @@ int main (int argc, char** argv) {
         } else {
             is_paid = false;
         } 
-        if ( add_invoice(invoicenumber, supplier, details, amount, is_paid, jUser["username"], password, database) ) {
-            std::cout << "{\"response\": \"" + invoicenumber + ", has been updated on the system.\"}\n\n";
-            return 0;  
+        if ( add_invoice(invoicenumber, supplier, details, amount, is_paid, json_str(jUser, "username"), password, database) ) {
+            emit_json_response(invoicenumber + ", has been updated on the system.");
+            return 0;
         } else {
-            std::cout << "{\"error\": \"" + invoicenumber + ", failed to be updated on the system.\"}\n\n";
-            return 0;              
-        }                                    
+            emit_json_error(invoicenumber + ", failed to be updated on the system.");
+            return 0;
+        }
     }
     else if (command == "adduser" ) {
         std::string new_user, new_password, address, telephone, zip_code, first_name, last_name;
@@ -2966,12 +2800,12 @@ int main (int argc, char** argv) {
             last_name = it->second;
             last_name = url_decode(last_name);
         }                                                           
-        if ( add_user(jUser["username"],new_user, new_password, address, zip_code, telephone, first_name, last_name, password, database) ) {
-            std::cout << "{\"response\": \"" + new_user + ", has been updated on the system.\"}\n\n";
-            return 0;  
+        if ( add_user(json_str(jUser, "username"),new_user, new_password, address, zip_code, telephone, first_name, last_name, password, database) ) {
+            emit_json_response(new_user + ", has been updated on the system.");
+            return 0;
         } else {
-            std::cout << "{\"error\": \"" + new_user + ", failed to be updated on the system.\"}\n\n";
-            return 0;  
+            emit_json_error(new_user + ", failed to be updated on the system.");
+            return 0;
         }
     }
     else if ( command == "getadvice" ) {
@@ -2981,73 +2815,73 @@ int main (int argc, char** argv) {
             prompt = it->second;
             prompt = url_decode(prompt);
         } else {
-            std::cout << "{\"error\": \"Please provide a prompt for the advice.\"}\n\n";
-            return 0;  
+            emit_json_error("Please provide a prompt for the advice.");
+            return 0;
         }
         std::string response = get_advice(prompt);
-        std::cout << "{\"response\": \"" + json_escape(response) + "\"}\n\n";
-        return 0;  
+        emit_json_response(response);
+        return 0;
     }
     else if ( command == "webstoreorder" ) {
         std::string order_id, items_json, total_value, payment_method;
         std::string customer_email = email_address;
-        
+
         it = queryData.find("order_id");
         if ( it != queryData.end() ) {
             order_id = it->second;
             order_id = url_decode(order_id);
         } else {
-            std::cout << "{\"error\": \"order_id is required\"}\n\n";
+            emit_json_error("order_id is required");
             return 0;
         }
-        
+
         it = queryData.find("items");
         if ( it != queryData.end() ) {
             items_json = it->second;
             items_json = url_decode(items_json);
         } else {
-            std::cout << "{\"error\": \"items is required\"}\n\n";
+            emit_json_error("items is required");
             return 0;
         }
-        
+
         it = queryData.find("total");
         if ( it != queryData.end() ) {
             total_value = it->second;
             total_value = url_decode(total_value);
         } else {
-            std::cout << "{\"error\": \"total is required\"}\n\n";
+            emit_json_error("total is required");
             return 0;
         }
-        
-        std::string response = record_web_store_order(order_id, customer_email, items_json, total_value, jUser["username"], password, database);
+
+        std::string response = record_web_store_order(order_id, customer_email, items_json, total_value, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
     else if ( command == "orderhistory" ) {
         std::string customer_email = email_address;
-        
+
         if ( customer_email.empty() ) {
-            std::cout << "{\"error\": \"Customer email not found\"}\n\n";
+            emit_json_error("Customer email not found");
             return 0;
         }
-        
-        std::string response = get_order_history(customer_email, jUser["username"], password, database);
+
+        std::string response = get_order_history(customer_email, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
     else if ( command == "validatecart" ) {
         std::string items_json;
-        
+
         it = queryData.find("items");
         if ( it != queryData.end() ) {
             items_json = it->second;
             items_json = url_decode(items_json);
         } else {
-            std::cout << "{\"error\": \"items parameter is required\"}\n\n";
+            emit_json_error("items parameter is required");
             return 0;
         }
-        
-        std::string response = validate_cart_inventory(items_json, jUser["username"], password, database);
+
+        std::string response = validate_cart_inventory(items_json, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
@@ -3059,7 +2893,7 @@ int main (int argc, char** argv) {
             start_date = it->second;
             start_date = url_decode(start_date);
         } else {
-            std::cout << "{\"error\": \"start_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            emit_json_error("start_date parameter is required (YYYY-MM-DD)");
             return 0;
         }
         
@@ -3068,11 +2902,11 @@ int main (int argc, char** argv) {
             end_date = it->second;
             end_date = url_decode(end_date);
         } else {
-            std::cout << "{\"error\": \"end_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            emit_json_error("end_date parameter is required (YYYY-MM-DD)");
             return 0;
         }
         
-        std::string response = get_sales_report(start_date, end_date, jUser["username"], password, database);
+        std::string response = get_sales_report(start_date, end_date, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
@@ -3084,7 +2918,7 @@ int main (int argc, char** argv) {
             start_date = it->second;
             start_date = url_decode(start_date);
         } else {
-            std::cout << "{\"error\": \"start_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            emit_json_error("start_date parameter is required (YYYY-MM-DD)");
             return 0;
         }
         
@@ -3093,23 +2927,23 @@ int main (int argc, char** argv) {
             end_date = it->second;
             end_date = url_decode(end_date);
         } else {
-            std::cout << "{\"error\": \"end_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            emit_json_error("end_date parameter is required (YYYY-MM-DD)");
             return 0;
         }
         
-        std::string response = get_revenue_report(start_date, end_date, jUser["username"], password, database);
+        std::string response = get_revenue_report(start_date, end_date, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
     else if ( command == "inventoryreport" ) {
-        std::string response = get_inventory_report(jUser["username"], password, database);
+        std::string response = get_inventory_report(json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
     else if ( command == "stockanalysis" ) {
         // AI reporting engine: current stock data + a Boudica AI narrative analysis/
         // reordering recommendation on top of it.
-        std::string response = get_stock_analysis(jUser["username"], password, database);
+        std::string response = get_stock_analysis(json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
@@ -3121,7 +2955,7 @@ int main (int argc, char** argv) {
             start_date = it->second;
             start_date = url_decode(start_date);
         } else {
-            std::cout << "{\"error\": \"start_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            emit_json_error("start_date parameter is required (YYYY-MM-DD)");
             return 0;
         }
 
@@ -3130,11 +2964,11 @@ int main (int argc, char** argv) {
             end_date = it->second;
             end_date = url_decode(end_date);
         } else {
-            std::cout << "{\"error\": \"end_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            emit_json_error("end_date parameter is required (YYYY-MM-DD)");
             return 0;
         }
 
-        std::string response = get_sales_analysis(start_date, end_date, jUser["username"], password, database);
+        std::string response = get_sales_analysis(start_date, end_date, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
@@ -3146,7 +2980,7 @@ int main (int argc, char** argv) {
             start_date = it->second;
             start_date = url_decode(start_date);
         } else {
-            std::cout << "{\"error\": \"start_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            emit_json_error("start_date parameter is required (YYYY-MM-DD)");
             return 0;
         }
         
@@ -3155,11 +2989,11 @@ int main (int argc, char** argv) {
             end_date = it->second;
             end_date = url_decode(end_date);
         } else {
-            std::cout << "{\"error\": \"end_date parameter is required (YYYY-MM-DD)\"}\n\n";
+            emit_json_error("end_date parameter is required (YYYY-MM-DD)");
             return 0;
         }
         
-        std::string response = get_tax_summary(start_date, end_date, jUser["username"], password, database);
+        std::string response = get_tax_summary(start_date, end_date, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
@@ -3171,11 +3005,11 @@ int main (int argc, char** argv) {
             order_id = it->second;
             order_id = url_decode(order_id);
         } else {
-            std::cout << "{\"error\": \"order_id parameter is required\"}\n\n";
+            emit_json_error("order_id parameter is required");
             return 0;
         }
-        
-        std::string response = get_receipt(order_id, jUser["username"], password, database);
+
+        std::string response = get_receipt(order_id, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
     }
@@ -3188,19 +3022,19 @@ int main (int argc, char** argv) {
             order_id = it->second;
             order_id = url_decode(order_id);
         } else {
-            std::cout << "{\"error\": \"order_id is required\"}\n\n";
+            emit_json_error("order_id is required");
             return 0;
         }
-        
+
         it = queryData.find("total");
         if ( it != queryData.end() ) {
             total_value = it->second;
             total_value = url_decode(total_value);
         } else {
-            std::cout << "{\"error\": \"total is required\"}\n\n";
+            emit_json_error("total is required");
             return 0;
         }
-        
+
         it = queryData.find("type");
         if ( it != queryData.end() ) {
             payment_type = it->second;
@@ -3212,15 +3046,18 @@ int main (int argc, char** argv) {
         // Create payment intent via Stripe
         std::string stripe_key = m_configuration["stripe_secret_key"];
         if (stripe_key.empty()) {
-            std::cout << "{\"error\": \"Stripe not configured\"}\n\n";
+            emit_json_error("Stripe not configured");
             return 0;
         }
 
-        double amount_double = std::stod(total_value);
+        double amount_double = safe_stod(total_value);
         int amount_cents = (int)(amount_double * 100);
-        
+
         StripePayment stripe(stripe_key);
-        std::string metadata = "{\"order_id\": \"" + order_id + "\", \"type\": \"" + payment_type + "\"}";
+        nlohmann::json jMetadata;
+        jMetadata["order_id"] = order_id;
+        jMetadata["type"] = payment_type;
+        std::string metadata = jMetadata.dump();
         std::string response = stripe.createPaymentIntent(
             amount_cents,
             "gbp",
@@ -3241,16 +3078,16 @@ int main (int argc, char** argv) {
             payment_intent_id = it->second;
             payment_intent_id = url_decode(payment_intent_id);
         } else {
-            std::cout << "{\"error\": \"payment_intent_id is required\"}\n\n";
+            emit_json_error("payment_intent_id is required");
             return 0;
         }
-        
+
         it = queryData.find("order_id");
         if ( it != queryData.end() ) {
             order_id = it->second;
             order_id = url_decode(order_id);
         } else {
-            std::cout << "{\"error\": \"order_id is required\"}\n\n";
+            emit_json_error("order_id is required");
             return 0;
         }
 
@@ -3258,21 +3095,17 @@ int main (int argc, char** argv) {
             std::string stripe_key = m_configuration["stripe_secret_key"];
             StripePayment stripe(stripe_key);
             std::string payment_status = stripe.getPaymentIntentStatus(payment_intent_id);
-            
-            std::string status_value = "pending";
-            std::size_t status_pos = payment_status.find("\"status\":");
-            if (status_pos != std::string::npos) {
-                std::size_t quote_start = payment_status.find("\"", status_pos + 10);
-                std::size_t quote_end = payment_status.find("\"", quote_start + 1);
-                if (quote_start != std::string::npos && quote_end != std::string::npos) {
-                    status_value = payment_status.substr(quote_start + 1, quote_end - quote_start - 1);
-                }
-            }
 
-            std::cout << "{\"success\": true, \"payment_intent_id\": \"" << payment_intent_id << 
-                       "\", \"status\": \"" << status_value << "\"}\n\n";
+            std::string status_value = json_str(nlohmann::json::parse(payment_status, nullptr, false), "status");
+            if ( status_value.empty() ) { status_value = "pending"; }
+
+            nlohmann::json j;
+            j["success"] = true;
+            j["payment_intent_id"] = payment_intent_id;
+            j["status"] = status_value;
+            std::cout << j.dump() << "\n\n";
         } catch (const std::exception& e) {
-            std::cout << "{\"error\": \"" << e.what() << "\"}\n\n";
+            emit_json_error(e.what());
         }
         return 0;
     }
@@ -3293,7 +3126,7 @@ int main (int argc, char** argv) {
             total_value = it->second;
             total_value = url_decode(total_value);
         } else {
-            std::cout << "{\"error\": \"total is required\"}\n\n";
+            emit_json_error("total is required");
             return 0;
         }
 
@@ -3305,13 +3138,15 @@ int main (int argc, char** argv) {
 
             std::string stripe_key = m_configuration["stripe_secret_key"];
             StripePayment stripe(stripe_key);
-            
-            double amount_double = std::stod(total_value);
+
+            double amount_double = safe_stod(total_value);
             int amount_cents = (int)(amount_double * 100);
-            
-            std::string metadata = "{\"till_operator\": \"" + operator_id + 
-                                  "\", \"till_trans_id\": \"" + till_trans_id + "\"}";
-            
+
+            nlohmann::json jMetadata;
+            jMetadata["till_operator"] = operator_id;
+            jMetadata["till_trans_id"] = till_trans_id;
+            std::string metadata = jMetadata.dump();
+
             std::string response = stripe.createPaymentIntent(
                 amount_cents,
                 "gbp",
@@ -3320,9 +3155,12 @@ int main (int argc, char** argv) {
                 metadata
             );
 
-            std::cout << "{\"success\": true, \"till_transaction_id\": \"" << till_trans_id << "\"}\n\n";
+            nlohmann::json j;
+            j["success"] = true;
+            j["till_transaction_id"] = till_trans_id;
+            std::cout << j.dump() << "\n\n";
         } catch (const std::exception& e) {
-            std::cout << "{\"error\": \"" << e.what() << "\"}\n\n";
+            emit_json_error(e.what());
         }
         return 0;
     }
@@ -3334,10 +3172,10 @@ int main (int argc, char** argv) {
             payment_intent_id = it->second;
             payment_intent_id = url_decode(payment_intent_id);
         } else {
-            std::cout << "{\"error\": \"payment_intent_id is required\"}\n\n";
+            emit_json_error("payment_intent_id is required");
             return 0;
         }
-        
+
         it = queryData.find("reason");
         if ( it != queryData.end() ) {
             reason = it->second;
@@ -3350,16 +3188,16 @@ int main (int argc, char** argv) {
             std::string stripe_key = m_configuration["stripe_secret_key"];
             StripePayment stripe(stripe_key);
             std::string response = stripe.refundPayment(payment_intent_id, 0, reason);
-            
+
             std::cout << response << "\n\n";
         } catch (const std::exception& e) {
-            std::cout << "{\"error\": \"" << e.what() << "\"}\n\n";
+            emit_json_error(e.what());
         }
         return 0;
     }
     else if ( command == "predict_daily_sales" ) {
         // Forecast today's sales based on last 10 same days of week
-        std::string user = jUser["username"];
+        std::string user = json_str(jUser, "username");
         std::string query = forecast_daily_sales(user, password, database);
         
         try {
@@ -3370,29 +3208,32 @@ int main (int argc, char** argv) {
                 pgbc.close();
                 
                 if (!error.empty()) {
-                    std::cout << "{\"error\": \"Query failed: " << error << "\"}\n\n";
+                    emit_json_error("Query failed: " + error);
                     return 0;
                 }
-                
+
                 // Parse response and use Boudica for prediction
-                std::string forecast_prompt = "Based on this sales data in JSON format: " + resp + 
+                std::string forecast_prompt = "Based on this sales data in JSON format: " + resp +
                                              ", predict today's sales using statistical analysis and machine learning. "
                                              "Return a JSON object with predicted_sales, confidence_level, and explanation.";
                 std::string boudica_forecast = call_boudica(forecast_prompt);
-                
-                std::cout << "{\"daily_sales_data\": " << resp << ", \"boudica_forecast\": " << boudica_forecast << "}\n\n";
+
+                nlohmann::json j;
+                j["daily_sales_data"] = json_parse_or_raw(resp);
+                j["boudica_forecast"] = json_parse_or_raw(boudica_forecast);
+                std::cout << j.dump() << "\n\n";
             } else {
-                std::cout << "{\"error\": \"Database connection failed\"}\n\n";
+                emit_json_error("Database connection failed");
                 return 0;
             }
         } catch (const std::exception& e) {
-            std::cout << "{\"error\": \"" << e.what() << "\"}\n\n";
+            emit_json_error(e.what());
         }
         return 0;
     }
     else if ( command == "predict_weekly_sales" ) {
         // Forecast this week's sales based on last 10 same weeks
-        std::string user = jUser["username"];
+        std::string user = json_str(jUser, "username");
         std::string query = forecast_weekly_sales(user, password, database);
         
         try {
@@ -3403,29 +3244,32 @@ int main (int argc, char** argv) {
                 pgbc.close();
                 
                 if (!error.empty()) {
-                    std::cout << "{\"error\": \"Query failed: " << error << "\"}\n\n";
+                    emit_json_error("Query failed: " + error);
                     return 0;
                 }
-                
+
                 // Parse response and use Boudica for prediction
-                std::string forecast_prompt = "Based on this weekly sales data in JSON format: " + resp + 
+                std::string forecast_prompt = "Based on this weekly sales data in JSON format: " + resp +
                                              ", predict this week's sales using statistical analysis and machine learning. "
                                              "Return a JSON object with predicted_sales, confidence_level, trend, and explanation.";
                 std::string boudica_forecast = call_boudica(forecast_prompt);
-                
-                std::cout << "{\"weekly_sales_data\": " << resp << ", \"boudica_forecast\": " << boudica_forecast << "}\n\n";
+
+                nlohmann::json j;
+                j["weekly_sales_data"] = json_parse_or_raw(resp);
+                j["boudica_forecast"] = json_parse_or_raw(boudica_forecast);
+                std::cout << j.dump() << "\n\n";
             } else {
-                std::cout << "{\"error\": \"Database connection failed\"}\n\n";
+                emit_json_error("Database connection failed");
                 return 0;
             }
         } catch (const std::exception& e) {
-            std::cout << "{\"error\": \"" << e.what() << "\"}\n\n";
+            emit_json_error(e.what());
         }
         return 0;
     }
     else if ( command == "predict_monthly_sales" ) {
         // Forecast this month's sales based on last 10 same months
-        std::string user = jUser["username"];
+        std::string user = json_str(jUser, "username");
         std::string query = forecast_monthly_sales(user, password, database);
         
         try {
@@ -3436,23 +3280,26 @@ int main (int argc, char** argv) {
                 pgbc.close();
                 
                 if (!error.empty()) {
-                    std::cout << "{\"error\": \"Query failed: " << error << "\"}\n\n";
+                    emit_json_error("Query failed: " + error);
                     return 0;
                 }
-                
+
                 // Parse response and use Boudica for prediction
-                std::string forecast_prompt = "Based on this monthly sales data in JSON format: " + resp + 
+                std::string forecast_prompt = "Based on this monthly sales data in JSON format: " + resp +
                                              ", predict this month's total sales using statistical analysis and seasonal trends. "
                                              "Return a JSON object with predicted_sales, confidence_level, seasonal_trend, and explanation.";
                 std::string boudica_forecast = call_boudica(forecast_prompt);
-                
-                std::cout << "{\"monthly_sales_data\": " << resp << ", \"boudica_forecast\": " << boudica_forecast << "}\n\n";
+
+                nlohmann::json j;
+                j["monthly_sales_data"] = json_parse_or_raw(resp);
+                j["boudica_forecast"] = json_parse_or_raw(boudica_forecast);
+                std::cout << j.dump() << "\n\n";
             } else {
-                std::cout << "{\"error\": \"Database connection failed\"}\n\n";
+                emit_json_error("Database connection failed");
                 return 0;
             }
         } catch (const std::exception& e) {
-            std::cout << "{\"error\": \"" << e.what() << "\"}\n\n";
+            emit_json_error(e.what());
         }
         return 0;
     }
@@ -3464,11 +3311,11 @@ int main (int argc, char** argv) {
             barcode = it->second;
             barcode = url_decode(barcode);
         } else {
-            std::cout << "{\"error\": \"barcode parameter is required\"}\n\n";
+            emit_json_error("barcode parameter is required");
             return 0;
         }
-        
-        std::string user = jUser["username"];
+
+        std::string user = json_str(jUser, "username");
         std::string query = predict_reorder_date(barcode, user, password, database);
 
         try {
@@ -3477,33 +3324,36 @@ int main (int argc, char** argv) {
                 std::string resp = pgbc.runCommandParams(query, {barcode});
                 std::string error = pgbc.getLastError();
                 pgbc.close();
-                
+
                 if (!error.empty()) {
-                    std::cout << "{\"error\": \"Query failed: " << error << "\"}\n\n";
+                    emit_json_error("Query failed: " + error);
                     return 0;
                 }
-                
+
                 // Parse response and use Boudica for reorder prediction
-                std::string reorder_prompt = "Based on this inventory and sales data in JSON format: " + resp + 
+                std::string reorder_prompt = "Based on this inventory and sales data in JSON format: " + resp +
                                             ", predict when this item needs to be reordered. "
                                             "Consider current stock level, average daily sales velocity, and supplier lead times. "
                                             "Return a JSON object with days_until_reorder, recommended_quantity, priority (urgent/normal/low), and explanation.";
                 std::string boudica_prediction = call_boudica(reorder_prompt);
-                
-                std::cout << "{\"item_data\": " << resp << ", \"reorder_prediction\": " << boudica_prediction << "}\n\n";
+
+                nlohmann::json j;
+                j["item_data"] = json_parse_or_raw(resp);
+                j["reorder_prediction"] = json_parse_or_raw(boudica_prediction);
+                std::cout << j.dump() << "\n\n";
             } else {
-                std::cout << "{\"error\": \"Database connection failed\"}\n\n";
+                emit_json_error("Database connection failed");
                 return 0;
             }
         } catch (const std::exception& e) {
-            std::cout << "{\"error\": \"" << e.what() << "\"}\n\n";
+            emit_json_error(e.what());
         }
         return 0;
     }
     else {
-        std::cout << "{\"error\": \"Command not recognised. Please check your command and try again.\"}\n\n";
-        return 0;  
+        emit_json_error("Command not recognised. Please check your command and try again.");
+        return 0;
     }
-    std::cout << "{\"error\": \"Command not recognised. Please check your command and try again.\"}\n\n";
+    emit_json_error("Command not recognised. Please check your command and try again.");
     return 0;
 }

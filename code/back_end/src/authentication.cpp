@@ -1,5 +1,5 @@
 #include "includes/authentication.h"
-#include "includes/jsonobject.h"
+#include "includes/json_utils.h"
 #include <iostream>
 #include <libpq-fe.h>
 #include <cstring>
@@ -30,21 +30,21 @@ std::map<std::string, std::string> Authentication::authenticate(const std::strin
 
     if (json_response && std::strlen(json_response) > 0) {
         std::string response_str(json_response);
-        JSON<std::string,std::string> jUser(response_str);
+        nlohmann::json jUser = json_row(response_str);
 
         // Fixed: this used to check for the literal substring "\"id\": \"1\"" (only ever
         // matching user id 1) as a stand-in for "a row came back", then hardcoded
         // result["id"] = "1" and result["role"] = "admin" for every successful login
         // regardless of who actually logged in — every user was reported back as admin.
         // Now genuinely parses the row the query returned.
-        std::string id = jUser["id"];
+        std::string id = json_str(jUser, "id");
         if (!id.empty()) {
             result["authenticated"] = "true";
             result["id"] = id;
-            result["username"] = jUser["username"];
-            result["email"] = jUser["email"];
-            result["role"] = jUser["role"];
-            result["full_name"] = jUser["full_name"];
+            result["username"] = json_str(jUser, "username");
+            result["email"] = json_str(jUser, "email");
+            result["role"] = json_str(jUser, "role");
+            result["full_name"] = json_str(jUser, "full_name");
 
             updateLastLogin(username);
         }
@@ -118,8 +118,8 @@ bool Authentication::hasRole(const std::string& username, const std::string& rol
         return false;
     }
     std::string resp_str(json_response);
-    JSON<std::string,std::string> jCount(resp_str);
-    std::string n = jCount["n"];
+    nlohmann::json jCount = json_row(resp_str);
+    std::string n = json_str(jCount, "n");
     return (!n.empty() && n != "0");
 }
 
@@ -141,8 +141,8 @@ bool Authentication::verifyPassword(const std::string& username, const std::stri
         return false;
     }
     std::string resp_str(json_response);
-    JSON<std::string,std::string> jCount(resp_str);
-    std::string n = jCount["n"];
+    nlohmann::json jCount = json_row(resp_str);
+    std::string n = json_str(jCount, "n");
     return (!n.empty() && n != "0");
 }
 

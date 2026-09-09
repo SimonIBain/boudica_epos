@@ -6,6 +6,7 @@
 #include "includes/postgresbc.h"
 #include "includes/utils.h"
 #include "includes/logging.h"
+#include <nlohmann/json.hpp>
 
 
 #include <fstream>
@@ -359,64 +360,63 @@ int Postgresql::exec(std::string query) {
     return 1;
 }
 
-/** Shared PGresult -> JSON conversion used by both runCommand() and runCommandParams(),
- * so the parameterized path returns byte-identical output to the string-built path
- * (callers throughout main.cpp parse this JSON and must not need to change). */
+/** Shared PGresult -> JSON conversion used by both runCommand() and runCommandParams().
+ * Emits real, valid JSON (proper escaping via nlohmann::json, real NULLs via
+ * PQgetisnull(), a real array for multi-row results) while keeping the same shape
+ * *contract* callers throughout main.cpp already rely on: 0 rows -> one object with
+ * every column present as "", 1 row -> a bare object (not array-wrapped), >1 rows -> a
+ * JSON array of objects. (Previously this hand-built the text directly and produced
+ * invalid JSON — double-brace-wrapped single rows, un-bracketed/uncomma'd multi-row
+ * blobs, zero escaping — that only "worked" because the hand-rolled JSON<> parser
+ * downstream was equally loose about structure.) */
 static std::string pgresultToJson(PGresult* results, const std::string& lastError) {
-    long recCount = 0;
-    std::string s_results;
-    std::string res = "{";
-    bool has_columns = false;
     if (PQresultStatus(results) == PGRES_TUPLES_OK) {
         int cols = PQnfields(results);
-        if ( cols > 0 ) { has_columns = true; }
         int rows = PQntuples(results);
-        if ( rows == 0 && cols > 0 ) {
-            for ( int col = 0; col <= rows; ++col ) {
-                recCount++;
-                for ( int col = 0; col < cols; col++ ) {
-                    std::string column = PQfname(results, col);
-                    if ( col > 0 ) {res += ",";}
-                    res += "\"" + column + "\": \"\"";
-                    s_results = res;
-                }
-            }
-            res = s_results;
-        }
-        for ( int row = 0; row < rows; row++ ) {
-            res += "{";
-            recCount++;
-            for ( int col = 0; col < cols; col++ ) {
+        if (cols == 0) { return "{}"; }
+
+        auto rowToJson = [&](int row) {
+            nlohmann::json j = nlohmann::json::object();
+            for (int col = 0; col < cols; col++) {
                 std::string column = PQfname(results, col);
-                std::string value = PQgetvalue(results, row, col);
-                if ( col == cols -1 ) {
-                    res += "\"" + column + "\": \"" + value+ "\"";
-                    s_results = value;
+                if (PQgetisnull(results, row, col)) {
+                    j[column] = nullptr;
                 } else {
-                    res += "\"" + column + "\": \"" + value+ "\",";
+                    j[column] = std::string(PQgetvalue(results, row, col));
                 }
             }
-            if ( row == rows -1 ) {
-                res += "}";
-            } else {
-                res += "},\n";
+            return j;
+        };
+
+        if (rows == 0) {
+            nlohmann::json j = nlohmann::json::object();
+            for (int col = 0; col < cols; col++) {
+                j[std::string(PQfname(results, col))] = "";
             }
+            return j.dump();
         }
-        res += "}";
-    } else {
-        std::string err = lastError;
-        size_t start = err.find(" '");
-        if ( start != std::string::npos ) {
-            size_t end = err.find(", ", start);
-            if ( end != std::string::npos ) {
-                err.erase ( start, end - start );
-            }
+        if (rows == 1) {
+            return rowToJson(0).dump();
         }
-        if ( res.find("}") != std::string::npos ) {
-            res = "{\"Success\" : \"Fail\", \"message\" : \"" + err + "\"}";
+        nlohmann::json jArray = nlohmann::json::array();
+        for (int row = 0; row < rows; row++) {
+            jArray.push_back(rowToJson(row));
+        }
+        return jArray.dump();
+    }
+
+    std::string err = lastError;
+    size_t start = err.find(" '");
+    if ( start != std::string::npos ) {
+        size_t end = err.find(", ", start);
+        if ( end != std::string::npos ) {
+            err.erase ( start, end - start );
         }
     }
-    return res;
+    nlohmann::json j;
+    j["Success"] = "Fail";
+    j["message"] = err;
+    return j.dump();
 }
 
 const char* Postgresql::runCommandParams(std::string sql, const std::vector<std::string>& params) {

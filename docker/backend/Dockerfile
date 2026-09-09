@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcurl4-openssl-dev \
         libssl-dev \
         libcrypto++-dev \
+        nlohmann-json3-dev \
         apache2 \
         gettext-base \
         curl \

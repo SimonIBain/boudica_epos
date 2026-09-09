@@ -15,6 +15,7 @@ endif()
 find_package(PostgreSQL REQUIRED)
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(nlohmann_json 3.2 REQUIRED)
 find_package(cryptopp QUIET)
 if(NOT cryptopp_FOUND)
     # Fallback to manual linking if package not found
@@ -52,6 +53,7 @@ target_link_libraries(boudica_pos
     ${OPENSSL_LIBRARIES}
     ${CRYPTOPP_LIBS}
     pthread
+    nlohmann_json::nlohmann_json
 )
 
 # Installation (optional)
