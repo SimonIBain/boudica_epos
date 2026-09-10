@@ -107,6 +107,40 @@ std::string call_boudica(std::string message, int max_tokens = 800) {
     return http.post_json(url, payload, headers);
 }
 
+// Boudica's /chat is RAG-aware and session-aware by default, both of which actively hurt a
+// call whose whole point is "analyze exactly this data, nothing else": live-tested
+// (2026-09-10, see CODE_VERIFIED_AUDIT.md §7.7) confirmed that embedding a report's JSON
+// inline in the message string gets it silently ignored — the model instead answers from
+// unrelated documents pulled in by RAG, or from a similar-looking prior session's history,
+// even with "use_rag": false and an explicit "No Rag. No Memory." directive in the prompt
+// text. Attaching the same data as a file, which Boudica's own multipart-upload path
+// text-extracts and injects as document context rather than treating as prose to
+// paraphrase, was the only approach that got a response actually grounded in the real data.
+static inline
+std::string call_boudica_with_data(const std::string& message, const std::string& data_json,
+    const std::string& data_filename, int max_tokens = 900) {
+    std::map<std::string, std::string> conf = get_configuration();
+    std::string host = !conf["boudica_host"].empty() ? conf["boudica_host"] : "localhost";
+    std::string port = !conf["boudica_port"].empty() ? conf["boudica_port"] : "80";
+    std::string api_key = conf["boudica_api_key"];
+
+    std::string url = "http://" + host + ":" + port + "/api/boudica/chat";
+
+    std::vector<std::pair<std::string, std::string>> fields = {
+        {"message", "No Rag. No Memory. " + message},
+        {"use_rag", "false"},
+        {"max_tokens", std::to_string(max_tokens)},
+    };
+
+    std::vector<std::string> headers;
+    if (!api_key.empty()) {
+        headers.push_back("Authorization: Bearer " + api_key);
+    }
+
+    OmniIndex::Http http;
+    return http.post_multipart_with_file(url, fields, "file", data_filename, data_json, headers);
+}
+
 // call_boudica() returns Boudica's full JSON reply (e.g. {"response": "...", "model":
 // ..., "tokens_generated": ..., ...}) — some callers (predict_daily_sales/weekly/monthly/
 // reorder_date) want that whole object embedded as-is; others just want the model's actual
@@ -2191,13 +2225,17 @@ std::string get_inventory_report(const std::string user, const std::string passw
 static inline
 std::string get_stock_analysis(const std::string user, const std::string password, const std::string database) {
     std::string inventory_json = get_inventory_report(user, password, database);
-    std::string prompt = "You are a retail inventory analyst for a small shop. Here is the "
-        "store's current stock data as JSON: " + inventory_json + ". Based on this data: "
+    std::string prompt = "You are a retail inventory analyst for a small shop. The attached "
+        "file is the complete and final stock data for this analysis — its \"items\" field is "
+        "the full list of stock items, each with barcode, description, quantity, supplier, "
+        "unit_price and total_value. If \"items\" is an empty array that itself means there is "
+        "currently no stock on record, not missing data. Based only on the attached data: "
         "1) identify any items that look low in stock and may need reordering soon, "
         "2) note any items that look overstocked or slow-moving, "
         "3) give clear, prioritized, practical restocking recommendations. "
         "Keep the response concise and written for a shop owner, not a data scientist.";
-    std::string analysis_text = extract_boudica_response_text(call_boudica(prompt, 900));
+    std::string analysis_text = extract_boudica_response_text(
+        call_boudica_with_data(prompt, inventory_json, "stock_data.json", 900));
     OmniIndex::Utils::Utils::trim(analysis_text);
     if ( analysis_text.empty() ) {
         analysis_text = "Could not get a response from the AI system.";
@@ -2212,12 +2250,16 @@ static inline
 std::string get_sales_analysis(std::string start_date, std::string end_date, const std::string user,
     const std::string password, const std::string database) {
     std::string sales_json = get_sales_report(start_date, end_date, user, password, database);
-    std::string prompt = "You are a retail sales analyst for a small shop. Here is the "
-        "store's sales data for the period " + start_date + " to " + end_date + " as JSON: "
-        + sales_json + ". Based on this data: 1) identify the best and worst performing "
-        "products, 2) note any notable trends, 3) give clear, practical recommendations to "
-        "improve sales. Keep the response concise and written for a shop owner, not a data scientist.";
-    std::string analysis_text = extract_boudica_response_text(call_boudica(prompt, 900));
+    std::string prompt = "You are a retail sales analyst for a small shop. The attached file "
+        "is the complete and final sales data for the period " + start_date + " to " + end_date +
+        " — its \"items\" field is the full list of products sold in that period, each with "
+        "barcode, description, quantity, revenue and unit_price. If \"items\" is an empty "
+        "array that itself means there were no sales in this period, not missing data. Based "
+        "only on the attached data: 1) identify the best and worst performing products, "
+        "2) note any notable trends, 3) give clear, practical recommendations to improve "
+        "sales. Keep the response concise and written for a shop owner, not a data scientist.";
+    std::string analysis_text = extract_boudica_response_text(
+        call_boudica_with_data(prompt, sales_json, "sales_data.json", 900));
     OmniIndex::Utils::Utils::trim(analysis_text);
     if ( analysis_text.empty() ) {
         analysis_text = "Could not get a response from the AI system.";

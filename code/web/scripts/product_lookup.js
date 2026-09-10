@@ -78,8 +78,11 @@ async function productHandleBarcode(scanned_barcode = '') {
 
         let products = [];
         if (json.products_search_details && Array.isArray(json.products_search_details)) {
-            // Response is an array of products from a description search
-            products = json.products_search_details;
+            // A genuine "not found" isn't an empty array or an "error" — it's a one-item
+            // array of empty strings (the same placeholder-row quirk fixed for barcode
+            // scanning at till.js/add_stock_item.js), so filter those out rather than
+            // trusting array length.
+            products = json.products_search_details.filter(p => p.barcode);
         } else if (json.description && json.rs_price) {
             // Response is a single product object from a barcode scan
             products = [json];

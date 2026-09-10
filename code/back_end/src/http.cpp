@@ -184,6 +184,65 @@ std::string Http::post_json(std::string url, std::string json_body, std::vector<
     return response;
 }
 
+std::string Http::post_multipart_with_file(std::string url,
+    std::vector<std::pair<std::string, std::string>> text_fields,
+    std::string file_field_name, std::string file_name, std::string file_content,
+    std::vector<std::string> extra_headers)
+{
+    CURL *curl;
+    CURLcode res;
+    std::string response;
+    Response_Code = 0;
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
+    if (curl)
+    {
+        curl_mime *form = curl_mime_init(curl);
+        curl_mimepart *field = NULL;
+
+        for (const auto& kv : text_fields) {
+            field = curl_mime_addpart(form);
+            curl_mime_name(field, kv.first.c_str());
+            curl_mime_data(field, kv.second.c_str(), kv.second.size());
+        }
+
+        // In-memory file attachment — curl_mime_data() (not curl_mime_filedata(), which
+        // reads from disk) so the caller's data never has to touch the filesystem.
+        field = curl_mime_addpart(form);
+        curl_mime_name(field, file_field_name.c_str());
+        curl_mime_filename(field, file_name.c_str());
+        curl_mime_data(field, file_content.c_str(), file_content.size());
+
+        struct curl_slist *headers = NULL;
+        for (const auto& h : extra_headers) {
+            headers = curl_slist_append(headers, h.c_str());
+        }
+
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_MIMEPOST, form);
+        if (headers) {
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        }
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, payload_source);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+        res = curl_easy_perform(curl);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &Response_Code);
+        if (res != CURLE_OK) {
+            fprintf(stderr, "Http::post_multipart_with_file curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        }
+
+        curl_easy_cleanup(curl);
+        curl_mime_free(form);
+        if (headers) {
+            curl_slist_free_all(headers);
+        }
+    }
+    return response;
+}
+
 int Http::upload(const std::string filename, const std::string url
     , const std::string path, std::string user)
 {

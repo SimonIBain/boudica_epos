@@ -43,6 +43,21 @@ namespace OmniIndex
          */
         std::string post_json(std::string url, std::string json_body, std::vector<std::string> extra_headers = {});
 
+        /**! POST a multipart/form-data body with one in-memory file attachment (no
+         * temp file on disk) plus a set of plain text fields, via libcurl's mime API.
+         * @param url - target URL
+         * @param text_fields - ordinary form fields, e.g. {{"message", "..."}, {"use_rag", "false"}}
+         * @param file_field_name - the form field name the file is attached under
+         * @param file_name - filename reported to the server (drives server-side content routing)
+         * @param file_content - the raw file content
+         * @param extra_headers - additional header lines, e.g. "Authorization: Bearer ..."
+         * @return response body (empty string on transport failure — check Response_Code)
+         */
+        std::string post_multipart_with_file(std::string url,
+            std::vector<std::pair<std::string, std::string>> text_fields,
+            std::string file_field_name, std::string file_name, std::string file_content,
+            std::vector<std::string> extra_headers = {});
+
     private:
         // static size_t payload_source(void *, size_t, size_t, void *);
         static size_t payload_source(void *, size_t, size_t, std::string *);
