@@ -32,13 +32,23 @@ document.addEventListener('DOMContentLoaded', function() {
     };
 
     salesComparisonBtn.addEventListener('click', async function() {
+        // 7.1#13: this used to hardcode fake figures behind a setTimeout labeled
+        // "Simulate network delay" and never called the backend at all — nothing in the
+        // UI marked it as placeholder data, so it looked like a real live comparison.
+        // Now built from the same real `getdashboard` data the other two buttons use:
+        // "today" is the live running total (store.period_sales), "previous" is the most
+        // recent day with a completed cashup (store.cash_up) before today.
         showLoading('Fetching sales comparison...');
-        // Mock data for demonstration
-        setTimeout(() => {
-            const data = {
-                last24h: 1250.75,
-                previous24h: 1100.50,
-            };
+
+        try {
+            const json = await apiCall('getdashboard');
+            if (json.error) throw new Error(json.error);
+
+            const last24h = parseFloat(json.today_total) || 0;
+            const dateEntries = Object.entries(json)
+                .filter(([key]) => key !== 'today_total' && !isNaN(new Date(key)))
+                .sort(([dateA], [dateB]) => new Date(dateB) - new Date(dateA));
+            const previous24h = dateEntries.length > 0 ? (parseFloat(dateEntries[0][1]) || 0) : 0;
 
             clearResults();
             const canvas = document.createElement('canvas');
@@ -49,15 +59,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 data: {
                     labels: ['Sales Comparison (£)'],
                     datasets: [{
-                        label: 'Last 24 Hours',
-                        data: [data.last24h],
+                        label: 'Today (running total)',
+                        data: [last24h],
                         backgroundColor: 'rgba(75, 192, 192, 0.6)',
                         borderColor: 'rgba(75, 192, 192, 1)',
                         borderWidth: 1,
                         color: '#FFFFFF'
                     }, {
-                        label: 'Previous 24 Hours',
-                        data: [data.previous24h],
+                        label: dateEntries.length > 0 ? `Previous day (${dateEntries[0][0]})` : 'Previous day (no data)',
+                        data: [previous24h],
                         backgroundColor: 'rgba(255, 159, 64, 0.6)',
                         borderColor: 'rgba(255, 159, 64, 1)',
                         borderWidth: 1,
@@ -68,50 +78,38 @@ document.addEventListener('DOMContentLoaded', function() {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                        title: { display: true, text: 'Sales: Last 24h vs. Previous 24h' },
+                        title: { display: true, text: 'Sales: Today vs. Previous Day' },
                         tooltip: { callbacks: { label: (context) => `Total: £${context.raw.toFixed(2)}` } }
                     },
                     scales: { y: { beginAtZero: true, ticks: { callback: (value) => `£${value}` } } }
                 }
             });
 
-            const change = data.last24h - data.previous24h;
-            const changePercent = data.previous24h > 0 ? (change / data.previous24h) * 100 : 0;
+            const change = last24h - previous24h;
+            const changePercent = previous24h > 0 ? (change / previous24h) * 100 : 0;
             const summary = document.createElement('p');
-            summary.innerHTML = `<strong>Change:</strong> £${change.toFixed(2)} (${changePercent.toFixed(2)}%)`;
+            summary.innerHTML = dateEntries.length > 0
+                ? `<strong>Change:</strong> £${change.toFixed(2)} (${changePercent.toFixed(2)}%)`
+                : `<strong>No prior day's cashup on record yet — comparison unavailable.</strong>`;
             summary.style.textAlign = 'center';
             summary.style.marginTop = '10px';
             dashboardResults.appendChild(summary);
 
             showToast('Comparison loaded.', 'success');
-        }, 500); // Simulate network delay
+        } catch (error) {
+            console.error("Error fetching sales comparison:", error);
+            showToast(error.message, "error");
+            clearResults();
+            dashboardResults.innerHTML = `<p>Could not load sales comparison.</p>`;
+        }
     });
 
     currentSalesBtn.addEventListener('click', async function() {
-        // const User = get_localStorage('user');
-        // const Password = get_localStorage('password');
-        // if (!User || !Password) { showToast("User not logged in", "error"); return; }
-        // showLoading('Fetching current sales total...');
-        // //queryString="username=sibain@omniindex.io&command=getdashboard&password=Ch35t3r";
-        // const params = new URLSearchParams({ username: User, password: Password, command: 'getdashboard' });
-        // let updategetDashboardRespnse = await fetch(`${PGBC_Agents}?${params.toString()}`);
-        // if (!updategetDashboardRespnse.ok) throw new Error(`Failed to fetch current totals..`);
-        // const data = await updategetDashboardRespnse.json();
-        // const today = data.today_total;
-
-
         showLoading('Fetching current sales totals...');
 
         try {
-            const User = get_localStorage('user');
-            const Password = get_localStorage('password');
-            if (!User || !Password) { throw new Error("User not logged in"); }
-
-            const params = new URLSearchParams({ username: User, password: Password, command: 'getdashboard' });
-            const response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-            if (!response.ok) throw new Error(`Network response was not ok: ${response.statusText}`);
-
-            const data = await response.json();
+            const data = await apiCall('getdashboard');
+            if (data.error) throw new Error(data.error);
             clearResults();
 
             let resultsHtml = '<h4>Current Day\'s Sales Totals</h4>';
@@ -139,16 +137,7 @@ document.addEventListener('DOMContentLoaded', function() {
         showLoading('Fetching 7-day sales history...');
 
         try {
-            const User = get_localStorage('user');
-            const Password = get_localStorage('password');
-            if (!User || !Password) { throw new Error("User not logged in"); }
-
-            // Assuming a new command 'getsaleshistory' for this data.
-            const params = new URLSearchParams({ username: User, password: Password, command: 'getdashboard' });
-            const response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-            if (!response.ok) throw new Error(`Network response was not ok: ${response.statusText}`);
-
-            const data = await response.json();
+            const data = await apiCall('getdashboard');
             if (data.error) throw new Error(data.error);
 
             // Filter out the 'today_total' key and work with valid date entries.

@@ -34,6 +34,7 @@ services:
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-AdminPassword123!}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
       # Defaults to this LAN's real running Boudica AI inference deployment.
       BOUDICA_HOST: ${BOUDICA_HOST:-192.168.0.131}
       BOUDICA_PORT: ${BOUDICA_PORT:-80}

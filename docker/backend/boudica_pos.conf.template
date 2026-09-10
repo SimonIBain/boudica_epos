@@ -16,6 +16,7 @@ epos_user ${ADMIN_USERNAME}
 epos_password ${ADMIN_PASSWORD}
 reward_point 1
 stripe_secret_key ${STRIPE_SECRET_KEY}
+stripe_publishable_key ${STRIPE_PUBLISHABLE_KEY}
 boudica_host ${BOUDICA_HOST}
 boudica_port ${BOUDICA_PORT}
 boudica_api_key ${BOUDICA_API_KEY}

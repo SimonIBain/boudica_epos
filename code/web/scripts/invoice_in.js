@@ -103,11 +103,6 @@ document.getElementById('invoice-in-form')?.addEventListener('submit', async fun
         if (DEBUG) {
             console.log("Add Invoice Response:", response_text);
         }
-        // Handle potential non-JSON text at the end of the response
-        const i_end = response_text.indexOf("}");
-        if (i_end > 0) {
-            response_text = response_text.substring(0, i_end + 1);
-        }
 
         if (response.ok) {
             const json = JSON.parse(response_text);

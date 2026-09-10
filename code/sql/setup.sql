@@ -57,8 +57,29 @@ CREATE TABLE store.suppliers_invoices (
     invoice_details TEXT,
     invoice_amount NUMERIC,
     paid_on TEXT,
+    attachment_filename TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ===== SPECIAL ORDERS =====
+-- Previously the till only printed a paper receipt and discarded the order (code/web's
+-- special_orders.js) — no backend table or command existed, so a lost receipt meant the
+-- order was gone with no way to look it up, track fulfillment, or reconcile the deposit.
+CREATE TABLE store.special_orders (
+    id SERIAL PRIMARY KEY,
+    order_number TEXT UNIQUE NOT NULL,
+    customer_name TEXT NOT NULL,
+    customer_address TEXT,
+    products TEXT NOT NULL,
+    total_value NUMERIC NOT NULL,
+    deposit_amount NUMERIC NOT NULL,
+    due_date TEXT,
+    status TEXT DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_special_orders_status ON store.special_orders(status);
+CREATE INDEX idx_special_orders_due_date ON store.special_orders(due_date);
 
 -- ===== PRODUCT CATALOG WITH SEARCH CAPABILITIES =====
 CREATE TABLE store.products (

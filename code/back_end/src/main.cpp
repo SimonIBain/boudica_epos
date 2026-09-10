@@ -11,6 +11,7 @@
 #include <thread>
 #include <unistd.h>
 #include <string.h>
+#include <cerrno>
 #include <thread>
 #include <map>
 #include <algorithm>
@@ -36,9 +37,17 @@
 
 // Constants for file upload
 const int MAX_FILE_SIZE = 1000 * 1024 * 1024; // 10MB max file size
-const std::string UPLOAD_DIR = "uploads/";
+// Absolute, not relative to the CGI process's cwd: mod_cgid runs the binary with its cwd
+// set to /usr/lib/cgi-bin/, which www-data (the account Apache's CGI workers run as) has
+// no write permission on — a relative "uploads/" here silently failed every write (mkdir
+// and the file open both fail with EACCES/ENOENT) the first time this was actually
+// exercised end-to-end. docker/backend/entrypoint.sh creates and chowns this directory.
+const std::string UPLOAD_DIR = "/var/lib/boudica_pos/uploads/";
 const std::string ALLOWED_EXTENSIONS[] = {".mp4", ".txt", ".pdf", ".jpg", ".png", ".doc", ".docx"};
-const int NUM_ALLOWED_EXTENSIONS = 6;
+// Fixed: this was hardcoded to 6 against a 7-element array above — ".docx" was silently
+// never allowed. Only matters now that processUpload() actually enforces this allowlist
+// (previously dead code); computed from the array itself so the two can't drift again.
+const int NUM_ALLOWED_EXTENSIONS = sizeof(ALLOWED_EXTENSIONS) / sizeof(ALLOWED_EXTENSIONS[0]);
 
 // Defined further down (reads /usr/lib/cgi-bin/boudica_pos.conf, rendered from env vars by
 // docker/backend/entrypoint.sh at container start).
@@ -185,6 +194,26 @@ std::string url_decode(std::string &req) {
         }
     }
     return (ret);
+}
+
+// Percent-encodes a value for embedding in a "key=value&key=value" query string — used
+// only to rebuild a synthetic queryString from a parsed multipart/form-data body (see
+// parseMultipartFields() below), so the existing QueryData parser and every handler's
+// existing url_decode() call keep working unchanged regardless of what a form field's raw
+// value contains (an "&"/"="/newline in an invoice detail note, say).
+static inline
+std::string url_encode(const std::string& str) {
+    std::string encoded;
+    for (unsigned char c : str) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            encoded += static_cast<char>(c);
+        } else {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%%%02X", c);
+            encoded += buf;
+        }
+    }
+    return encoded;
 }
 
 // Confirmed live (taxsummary crashed the whole CGI process with an uncaught
@@ -362,6 +391,17 @@ std::map<std::string, std::string> get_configuration() {
         configuration["stripe_secret_key"]= tmp;
     }
     tmp = conf;
+    sz_pos = tmp.find("\nstripe_publishable_key ");
+    if ( sz_pos != std::string::npos ) {
+        tmp.erase(0, sz_pos + 24);
+        sz_pos = tmp.find("\n");
+        if ( sz_pos != std::string::npos ) {
+            tmp.erase ( sz_pos );
+        }
+        OmniIndex::Utils::Utils::trim(tmp);
+        configuration["stripe_publishable_key"]= tmp;
+    }
+    tmp = conf;
     sz_pos = tmp.find("\nboudica_host ");
     if ( sz_pos != std::string::npos ) {
         tmp.erase(0, sz_pos + 14);
@@ -406,37 +446,54 @@ std::string sanitizeFilename(const std::string& filename) {
     return sanitized;
 }
 
-// Function to process the uploaded file
-bool processUpload(const std::string& filename, const std::string& content) {
+// Function to process the uploaded file. Returns the sanitized, disk-unique filename
+// actually written under UPLOAD_DIR, or "" on rejection/failure. Previously returned
+// bool and was never called from anywhere (§7.2#3) — now that addinvoice below actually
+// reaches this, the ALLOWED_EXTENSIONS allowlist (also previously unused/dead) is
+// enforced too, since arbitrary uploaded content is now genuinely reachable.
+std::string processUpload(const std::string& filename, const std::string& content) {
     try {
+        std::string ext_lower = filename;
+        OmniIndex::Utils::Utils::toLower(ext_lower);
+        bool ext_ok = false;
+        for (int i = 0; i < NUM_ALLOWED_EXTENSIONS; i++) {
+            const std::string& ext = ALLOWED_EXTENSIONS[i];
+            if (ext_lower.length() >= ext.length() &&
+                ext_lower.compare(ext_lower.length() - ext.length(), ext.length(), ext) == 0) {
+                ext_ok = true;
+                break;
+            }
+        }
+        if (!ext_ok) {
+            return "";
+        }
+
+        // Check file size
+        if ((int)content.length() > MAX_FILE_SIZE) {
+            return "";
+        }
+
         // Create upload directory if it doesn't exist
         std::string mkdir_cmd = "mkdir -p " + UPLOAD_DIR;
         system(mkdir_cmd.c_str());
 
-        // Sanitize filename
-        std::string safe_filename = sanitizeFilename(filename);
+        // Sanitize filename, and prefix with a timestamp so two invoices attaching a
+        // same-named file (e.g. "invoice.pdf") don't clobber each other on disk.
+        std::string safe_filename = std::to_string(std::time(nullptr)) + "_" + sanitizeFilename(filename);
         std::string filepath = UPLOAD_DIR + safe_filename;
-
-        // Check file size
-        if (content.length() > MAX_FILE_SIZE) {
-
-            return false;
-        }
 
         // Write file to disk
         std::ofstream file(filepath, std::ios::binary);
         if (!file) {
-
-            return false;
+            return "";
         }
 
         file.write(content.c_str(), content.length());
         file.close();
 
-        return true;
+        return safe_filename;
     } catch (const std::exception& e) {
-
-        return false;
+        return "";
     }
 }
 
@@ -444,18 +501,66 @@ bool processUpload(const std::string& filename, const std::string& content) {
 std::vector<std::string> parseMultipartData(const std::string& data) {
     std::vector<std::string> result;
     std::string boundary = data.substr(0, data.find("\r\n"));
-    
+
     size_t pos = 0;
     while ((pos = data.find(boundary, pos)) != std::string::npos) {
         size_t next_boundary = data.find(boundary, pos + boundary.length());
         if (next_boundary == std::string::npos) break;
-        
+
         std::string part = data.substr(pos, next_boundary - pos);
         result.push_back(part);
         pos = next_boundary;
     }
-    
+
     return result;
+}
+
+// A part with a "filename" attribute is a file upload (its raw bytes end up in .value);
+// every other part is a plain form field.
+struct MultipartField {
+    std::string value;
+    std::string filename;
+};
+
+// Turns the raw parts parseMultipartData() splits out into a name -> field map, keyed by
+// each part's Content-Disposition "name". This is what actually makes
+// parseMultipartData()/processUpload() reachable (§7.2#3) — used by main()'s POST-body
+// handling below to support addinvoice's file-attaching form.
+std::map<std::string, MultipartField> parseMultipartFields(const std::string& body) {
+    std::map<std::string, MultipartField> fields;
+    for (const std::string& raw_part : parseMultipartData(body)) {
+        std::string part = raw_part;
+        size_t first_crlf = part.find("\r\n");
+        if (first_crlf == std::string::npos) { continue; }
+        part.erase(0, first_crlf + 2); // drop the leading "--boundary" marker line
+
+        size_t header_end = part.find("\r\n\r\n");
+        if (header_end == std::string::npos) { continue; }
+        std::string headers = part.substr(0, header_end);
+        std::string content = part.substr(header_end + 4);
+        // Strip the trailing CRLF that always precedes the next boundary marker.
+        if (content.size() >= 2 && content.compare(content.size() - 2, 2, "\r\n") == 0) {
+            content.erase(content.size() - 2);
+        }
+
+        size_t name_pos = headers.find("name=\"");
+        if (name_pos == std::string::npos) { continue; }
+        name_pos += 6;
+        size_t name_end = headers.find('"', name_pos);
+        if (name_end == std::string::npos) { continue; }
+        std::string field_name = headers.substr(name_pos, name_end - name_pos);
+
+        std::string filename;
+        size_t fn_pos = headers.find("filename=\"");
+        if (fn_pos != std::string::npos) {
+            fn_pos += 10;
+            size_t fn_end = headers.find('"', fn_pos);
+            if (fn_end != std::string::npos) { filename = headers.substr(fn_pos, fn_end - fn_pos); }
+        }
+
+        fields[field_name] = MultipartField{content, filename};
+    }
+    return fields;
 }
 
 static inline
@@ -504,8 +609,20 @@ std::string check_user_credentials(std::string email_address, std::string passwo
     }
 }
 
+// Gates the small set of commands that shouldn't be reachable by every logged-in till
+// user (financial reports, structural writes like adding products/suppliers/users,
+// refunds). `jUser` is the row already fetched by check_user_credentials() moments
+// earlier in the same request — no extra DB round trip needed. Every other command the
+// till actually uses (selling, stock adjustments, cashup, dashboards, lookups, forecasts)
+// stays reachable by any active user, matching how the seeded admin/operator accounts are
+// used today.
+static inline
+bool user_is_privileged(const nlohmann::json& jUser) {
+    std::string role = json_str(jUser, "role");
+    return role == "admin" || role == "manager";
+}
 
-static inline 
+static inline
 std::string pgbc_connection (const std::string user, const std::string password, const std::string server, const std::string database, const std::string port, const std::string query) {
     Postgresql pgbc = Postgresql( user, password, server, port, database ); 
     if ( pgbc._isConnected ) {
@@ -560,9 +677,14 @@ bool add_product(std::string supplier, const std::string barcode, const std::str
             return false;
         }
         nlohmann::json jSupplier = json_row(resp);
-        /** If we have this without a barcode we will deleet the original. */
+        /** If a product with this supplier+description already exists, replace it. */
         if ( json_str(jSupplier, "supplier") != "" && json_str(jSupplier, "supplier") != "null"  ) {
-            int del_resp = pgbc.execParams("DELETE FROM store.products WHERE barcode = $1", {barcode});
+            // Fixed: this used to delete by the *new incoming* barcode instead of the
+            // existing row's own barcode (json_str(jSupplier, "barcode")) — since the two
+            // are frequently different (a re-added product often gets a freshly generated
+            // barcode), the old row was never actually deleted, leaving two rows for the
+            // same product under different barcodes.
+            int del_resp = pgbc.execParams("DELETE FROM store.products WHERE barcode = $1", {json_str(jSupplier, "barcode")});
             if ( del_resp != 0 ) {
                 pgbc.close();
                 return false;
@@ -688,9 +810,10 @@ std::string get_workshops(const std::string user, const std::string password, co
 }
 
 static inline
-bool add_invoice(std::string invoice_number, std::string supplier, std::string details, std::string amount, bool paid, 
+bool add_invoice(std::string invoice_number, std::string supplier, std::string details, std::string amount, bool paid,
+    const std::string attachment_filename,
     const std::string user, const std::string password, const std::string database) {
-    //CREATE BLOCK store.suppliers_invoices (supplierencrypt TEXT, invoice_number TEXT, invoice_details TEXT, invoice_amout NUMERIC, paid_on TEXT);    
+    //CREATE BLOCK store.suppliers_invoices (supplierencrypt TEXT, invoice_number TEXT, invoice_details TEXT, invoice_amout NUMERIC, paid_on TEXT);
     supplier = clean_value(supplier);
     invoice_number = clean_value(invoice_number);
     details = clean_value(details);
@@ -698,7 +821,7 @@ bool add_invoice(std::string invoice_number, std::string supplier, std::string d
     if ( !paid ) {
         date = "";
     }
-    std::string sql = "INSERT INTO store.suppliers_invoices (supplier, invoice_number, invoice_details, invoice_amount, paid_on) VALUES ($1, $2, $3, $4, $5)";
+    std::string sql = "INSERT INTO store.suppliers_invoices (supplier, invoice_number, invoice_details, invoice_amount, paid_on, attachment_filename) VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))";
     std::map<std::string, std::string> m_conf = get_configuration();
     if ( m_conf.empty() ) {
         return false;
@@ -706,7 +829,7 @@ bool add_invoice(std::string invoice_number, std::string supplier, std::string d
     Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
         std::string error, warning, resp;
-        int i_resp = pgbc.execParams(sql, {supplier, invoice_number, details, amount, date});
+        int i_resp = pgbc.execParams(sql, {supplier, invoice_number, details, amount, date, attachment_filename});
         warning = pgbc.getWarnings();
         error = pgbc.getLastError();
         if ( error != "" || i_resp != 0 ) {
@@ -716,7 +839,38 @@ bool add_invoice(std::string invoice_number, std::string supplier, std::string d
         pgbc.close();
         return true;
     }
-    return false;    
+    return false;
+}
+
+// Previously the till only printed a paper Special Order receipt and discarded the order
+// (code/web/scripts/special_orders.js — "For now, we just print and clear.") — no table,
+// no command, no way to look an order up again if the receipt was lost (§7.2#2).
+static inline
+bool add_special_order(std::string order_number, std::string customer_name, std::string customer_address,
+    const std::string products, const std::string total_value, const std::string deposit_amount, std::string due_date,
+    const std::string user, const std::string password, const std::string database) {
+    order_number = clean_value(order_number);
+    customer_name = clean_value(customer_name);
+    customer_address = clean_value(customer_address);
+    due_date = clean_value(due_date);
+    std::string sql = "INSERT INTO store.special_orders "
+        "(order_number, customer_name, customer_address, products, total_value, deposit_amount, due_date) "
+        "VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''))";
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) {
+        return false;
+    }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( pgbc._isConnected ) {
+        int i_resp = pgbc.execParams(sql, {order_number, customer_name, customer_address, products, total_value, deposit_amount, due_date});
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        if ( error != "" || i_resp != 0 ) {
+            return false;
+        }
+        return true;
+    }
+    return false;
 }
 
 /** Day routines  */
@@ -861,12 +1015,15 @@ bool update_stock(const std::string barcode, std::string quantity,
         bool is_removal = (quantity.find("-") != std::string::npos);
         std::string delta = quantity;
         if ( is_removal ) { delta.erase(0, 1); }
+        // Fixed: std::stol() on a non-numeric quantity param threw uncaught, crashing the
+        // whole CGI process (confirmed live) — same class of bug as the cash_up/taxsummary
+        // crashes fixed in §0.2, but this is the actual sale/stock-adjustment path.
         long total_quantity = is_removal
-            ? std::stol(current_qty) - std::stol(delta)
-            : std::stol(current_qty) + std::stol(delta);
+            ? safe_stol(current_qty) - safe_stol(delta)
+            : safe_stol(current_qty) + safe_stol(delta);
         long total_available = is_removal
-            ? std::stol(current_ava) - std::stol(delta)
-            : std::stol(current_ava) + std::stol(delta);
+            ? safe_stol(current_ava) - safe_stol(delta)
+            : safe_stol(current_ava) + safe_stol(delta);
 
         pgbc.execParams("DELETE FROM store.stock_take WHERE barcode = $1", {barcode});
         /** Clean up no need for a Web 3 thngnymagig here */
@@ -911,12 +1068,12 @@ bool move_stock_out(const std::string supplier,const std::string barcode, std::s
         std::string current_qty = json_str(jStock, "quantity");
         OmniIndex::Utils::Utils::trim(current_qty);
         if ( current_qty.length() < 1 ) { current_qty = "0"; }
-        long total_quantity = std::stol(current_qty);
+        long total_quantity = safe_stol(current_qty);
 
         std::string current_ava = json_str(jStock, "available");
         OmniIndex::Utils::Utils::trim(current_ava);
         if ( current_ava.length() < 1 ) { current_ava = "0"; }
-        long total_available = std::stol(current_ava) - std::stol(quantity);
+        long total_available = safe_stol(current_ava) - safe_stol(quantity);
 
         // stock_removal row + the stock upsert belong together as one operation.
         pgbc.beginTransaction();
@@ -966,12 +1123,12 @@ bool move_stock_in(const std::string supplier,const std::string barcode, std::st
         std::string current_qty = json_str(jStock, "quantity");
         OmniIndex::Utils::Utils::trim(current_qty);
         if ( current_qty.length() < 1 ) { current_qty = "0"; }
-        long total_quantity = std::stol(current_qty);
+        long total_quantity = safe_stol(current_qty);
 
         std::string current_ava = json_str(jStock, "available");
         OmniIndex::Utils::Utils::trim(current_ava);
         if ( current_ava.length() < 1 ) { current_ava = "0"; }
-        long total_available = std::stol(current_ava) + std::stol(quantity);
+        long total_available = safe_stol(current_ava) + safe_stol(quantity);
 
         pgbc.beginTransaction();
         int i_resp = pgbc.execParams(
@@ -1051,19 +1208,15 @@ bool update_sale(const std::string bar_code, const std::string rs_price, std::st
         // silently rejected. Now shares the same accumulate-and-insert path as any other
         // sale, just starting from a zero baseline instead of the previous row's totals.
         if ( json_str(jProduct, "completed") != "0") {
-            std::string tmp = json_str(jProduct, "quantity");
-            OmniIndex::Utils::Utils::trim(tmp);
-            if ( tmp.length() > 0 ) {
-                total_quantity = std::stol(tmp);
-            }
-            std::string tmp2 = json_str(jProduct, "running_total");
-            OmniIndex::Utils::Utils::trim(tmp2);
-            if ( tmp2.length() > 0 ) {
-                total_rs_price = std::stod(tmp2);
-            }
+            total_quantity = safe_stol(json_str(jProduct, "quantity"));
+            total_rs_price = safe_stod(json_str(jProduct, "running_total"));
         }
-        total_quantity += std::stol(sale_quantity);
-        total_rs_price += std::stod(rs_price);
+        // Fixed: std::stol()/std::stod() on a non-numeric price/quantity (a scanner glitch,
+        // malformed request, or operator typo) threw uncaught here, crashing the whole CGI
+        // process (confirmed live: empty HTTP 200 body, `terminate called ... stol` in the
+        // Apache error log) — this is the core sale-recording path.
+        total_quantity += safe_stol(sale_quantity);
+        total_rs_price += safe_stod(rs_price);
         total_rs_price = std::round(total_rs_price*100)/100;
         /** Now update it all */
         if ( supplier == "" || supplier == "null" ) {
@@ -1310,10 +1463,10 @@ std::string get_dashboard(const std::string user,
         std::string date = json_str(jDailies, "cashup_date"); // was "modified_date" — that key was never in this query's result set, so this was always blank
         date = clean_value(date);
         OmniIndex::Utils::Utils::trim(date);
-        // Note: this condition is always true (daily can't equal both "" and "null" at
-        // once) — a pre-existing logic bug (should very likely be &&), left as found since
-        // it's outside the scope of this JSON-layer migration.
-        if ( daily != "" || daily != "null" ) {
+        // Fixed: this was `||`, which is always true (daily can't equal both "" and "null"
+        // at once) — every row got included regardless, producing a stray ""-keyed entry
+        // for the placeholder row a zero-result query returns.
+        if ( daily != "" && daily != "null" ) {
             out[date] = daily;
         }
     }
@@ -1428,6 +1581,15 @@ bool complete_stock_take(const std::string user,
             }
             sql = "SELECT p.supplier, p.product_description, p.color, p.type, s.quantity FROM store.products AS p JOIN store.stock AS s ON p.barcode = s.barcode WHERE p.barcode = $1";
             std::string resp_data(pgbc.runCommandParams(sql, {barcode}));
+            // Fixed (§7.1#12): previously only update_stock() cleared store.stock_take
+            // rows, and only for barcodes with an actual discrepancy — a barcode that
+            // counted correctly here was never cleared, so the *next* stocktake session's
+            // COUNT(barcode) above (used as this session's counted quantity) kept summing
+            // rows left over from every prior session, silently inflating future counts.
+            // Every barcode this session touched is cleared here regardless of outcome, so
+            // the next stocktake always starts counting from zero. Must run on this same
+            // still-open connection, before the periodic pgbc.close() below.
+            pgbc.execParams("DELETE FROM store.stock_take WHERE barcode = $1", {barcode});
             false_pool_count++;
             if ( false_pool_count == 50 ) {
                 pgbc.close();
@@ -1569,14 +1731,16 @@ std::string forecast_daily_sales(std::string db_user, std::string db_pass, std::
     int current_dow = timeinfo->tm_wday;
     
     // Query last 10 same day of week sales
+    // Fixed: a pure-aggregate SELECT (no GROUP BY — this collapses to one row) followed by
+    // "ORDER BY sale_date" is invalid SQL (sale_date isn't in the SELECT list or an
+    // aggregate) — Postgres rejected every call to this query. Removed; there's nothing
+    // meaningful to order when the whole result is a single summary row.
     std::string sql = "SELECT SUM(quantity) as total_qty, COUNT(DISTINCT DATE(sale_date)) as num_days, "
                      "AVG(running_total) as avg_total "
                      "FROM store.period_sales "
                      "WHERE EXTRACT(DOW FROM sale_date) = " + std::to_string(current_dow) + " "
                      "AND sale_date > NOW() - INTERVAL '70 days' "
-                     "AND completed = '1' "
-                     "ORDER BY sale_date DESC "
-                     "LIMIT 10";
+                     "AND completed = '1'";
     
     return sql;
 }
@@ -1594,7 +1758,10 @@ std::string forecast_weekly_sales(std::string db_user, std::string db_pass, std:
                      "AND sale_date > NOW() - INTERVAL '70 weeks' "
                      "AND completed = '1' "
                      "GROUP BY EXTRACT(WEEK FROM sale_date) "
-                     "ORDER BY sale_date DESC "
+                     // Fixed: "ORDER BY sale_date" isn't valid alongside a GROUP BY that
+                     // doesn't include it — Postgres rejected every call. Order by the
+                     // grouped expression itself instead (same "most recent first" intent).
+                     "ORDER BY EXTRACT(WEEK FROM sale_date) DESC "
                      "LIMIT 10";
     
     return sql;
@@ -1613,7 +1780,9 @@ std::string forecast_monthly_sales(std::string db_user, std::string db_pass, std
                      "AND sale_date > NOW() - INTERVAL '10 years' "
                      "AND completed = '1' "
                      "GROUP BY EXTRACT(MONTH FROM sale_date), EXTRACT(YEAR FROM sale_date) "
-                     "ORDER BY sale_date DESC "
+                     // Fixed: same invalid-ORDER-BY-vs-GROUP-BY bug as the daily/weekly
+                     // forecasts above — order by the grouped year/month instead.
+                     "ORDER BY EXTRACT(YEAR FROM sale_date) DESC, EXTRACT(MONTH FROM sale_date) DESC "
                      "LIMIT 10";
     
     return sql;
@@ -2222,6 +2391,9 @@ int main (int argc, char** argv) {
         m_configuration["username"], m_configuration["password"],
         m_configuration["server"], m_configuration["port"], "postgres");
     std::string queryString;
+    // Populated only when addinvoice's POST body is multipart/form-data with a file part
+    // attached (see the POST-body handling below).
+    std::string uploaded_invoice_filename, uploaded_invoice_content;
     #ifdef DEBUG 
         /** Addproduct(const std::string supplier, const std::string barcode, const std::string rs_price, const std::string description ...) */
         //queryString="username=sibain@omniindex.io&command=addproduct&password=Ch35t3r&supplier=James C. Brett&barcode=&createbarcode=true&rs_price=120.2&description=Wendy - With Wool Aran 400g";
@@ -2285,13 +2457,49 @@ int main (int argc, char** argv) {
             Environment<std::string, std::string>::iterator content_length_itr = environment.find("CONTENT_LENGTH");
             if ( content_length_itr != environment.end() ) {
                 int content_length = std::stoi(content_length_itr->second);
-                char buffer[4096];
-                std::cin.read(buffer, std::min(content_length, 4095));
-                queryString = std::string(buffer, std::cin.gcount());
+                // Fixed (§3.16): this used to read into a fixed 4096-byte stack buffer
+                // capped at 4095 bytes regardless of the real Content-Length — any POST
+                // body over ~4KB (a multi-item cart/order, or any real file attached to
+                // addinvoice below) was silently truncated rather than rejected. Reads the
+                // real body length now, capped at MAX_FILE_SIZE as a sane upper bound
+                // instead of an arbitrary 4KB one.
+                int read_length = std::min(content_length, MAX_FILE_SIZE);
+                std::vector<char> buffer(read_length);
+                if ( read_length > 0 ) { std::cin.read(buffer.data(), read_length); }
+                queryString = std::string(buffer.data(), std::cin.gcount());
             } else {
                 std::cout << "Content-type:application/json\r\n\r\n";
                 std::cout << "{\"error\": \"No content length for POST request\"}\n\n";
                 return 0;
+            }
+
+            // addinvoice's file-attach form (§7.2#3) posts multipart/form-data instead of
+            // the usual urlencoded body — parseMultipartData()/processUpload() already
+            // existed but nothing ever called them. Detected here and rewritten into an
+            // ordinary "key=value&..." queryString (percent-encoding each field's raw
+            // value) so QueryData and every existing handler's url_decode() call keep
+            // working unchanged; the file part (if any) is pulled out separately since its
+            // raw bytes don't belong in a urlencoded query string.
+            Environment<std::string, std::string>::iterator content_type_itr = environment.find("CONTENT_TYPE");
+            std::string content_type = (content_type_itr != environment.end()) ? content_type_itr->second : "";
+            if ( content_type.find("multipart/form-data") != std::string::npos ) {
+                // parseMultipartFields() derives the boundary from the body's own first
+                // line (always "--<boundary>" per RFC 2046), so Content-Type's boundary=
+                // parameter doesn't need re-parsing here — it's only checked above to
+                // decide whether this body is multipart at all.
+                std::map<std::string, MultipartField> fields = parseMultipartFields(queryString);
+                std::string rebuilt;
+                for ( const auto& field_pair : fields ) {
+                    const MultipartField& field = field_pair.second;
+                    if ( !field.filename.empty() ) {
+                        uploaded_invoice_filename = field.filename;
+                        uploaded_invoice_content = field.value;
+                        continue;
+                    }
+                    if ( !rebuilt.empty() ) { rebuilt += "&"; }
+                    rebuilt += field_pair.first + "=" + url_encode(field.value);
+                }
+                queryString = rebuilt;
             }
         } else {
             // GET request - use QUERY_STRING
@@ -2438,6 +2646,7 @@ int main (int argc, char** argv) {
     
     /** We will now go through the commands */
     if ( command == "addproduct" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string create_barcode;
         it = queryData.find("createbarcode");
         if ( it != queryData.end() ) {
@@ -2526,7 +2735,37 @@ int main (int argc, char** argv) {
             return 0;
         }
     }
+    else if ( command == "movestockout" || command == "movestockin" ) {
+        // move_stock_in()/move_stock_out() (main.cpp) were already fully implemented
+        // (transaction-safe, upsert-correct, reason-tagged store.stock_removal rows) but
+        // had no dispatch case — the till had no way to record *why* stock changed
+        // (breakage, shrinkage, supplier return, count correction).
+        std::string barcode, quantity, reason, supplier;
+        it = queryData.find("barcode");
+        if ( it != queryData.end() ) { barcode = url_decode(it->second); }
+        it = queryData.find("quantity");
+        if ( it != queryData.end() ) { quantity = url_decode(it->second); }
+        it = queryData.find("reason");
+        if ( it != queryData.end() ) { reason = url_decode(it->second); }
+        it = queryData.find("supplier");
+        if ( it != queryData.end() ) { supplier = url_decode(it->second); }
+        if ( barcode == "" || quantity == "" ) {
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
+        }
+        bool ok = ( command == "movestockout" )
+            ? move_stock_out(supplier, barcode, quantity, reason, json_str(jUser, "username"), password, database)
+            : move_stock_in(supplier, barcode, quantity, reason, json_str(jUser, "username"), password, database);
+        if ( ok ) {
+            emit_json_response(barcode + ", has been updated on the system.");
+            return 0;
+        } else {
+            emit_json_error(barcode + ", failed to be updated on the system.");
+            return 0;
+        }
+    }
     else if ( command == "addsupplier" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         it = queryData.find("supplier");
         std::string supplier;
         if ( it != queryData.end() ) {
@@ -2691,7 +2930,16 @@ int main (int argc, char** argv) {
     else if ( command == "getdashboard" ) {
         std::string response = get_dashboard(json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
-        return 0;      
+        return 0;
+    }
+    else if ( command == "getpublicconfig" ) {
+        // 7.1#5: non-secret, client-safe config (a Stripe *publishable* key is designed
+        // to be exposed to the browser) that must still come from real per-deployment
+        // config rather than be hardcoded in the till's JS source.
+        nlohmann::json out;
+        out["stripe_publishable_key"] = m_configuration["stripe_publishable_key"];
+        std::cout << out.dump() << "\n\n";
+        return 0;
     }
     else if ( command == "stocktake" ) {
         std::string barcode;
@@ -2717,7 +2965,8 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "addinvoice" ) {
-        //queryString="username=sibain@omniindex.io&command=addinvoice&password=Ch35t3r&suppleier=James C Brett Ltd&details=&amount=&paid=false&invoicenumber=0168979";  
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        //queryString="username=sibain@omniindex.io&command=addinvoice&password=Ch35t3r&suppleier=James C Brett Ltd&details=&amount=&paid=false&invoicenumber=0168979";
 
         it = queryData.find("supplier");
         std::string supplier;
@@ -2754,8 +3003,23 @@ int main (int argc, char** argv) {
             is_paid = true;
         } else {
             is_paid = false;
-        } 
-        if ( add_invoice(invoicenumber, supplier, details, amount, is_paid, json_str(jUser, "username"), password, database) ) {
+        }
+
+        // Fixed (§7.2#3): invoice_in.js has always posted the attachment as a real
+        // multipart file part, but nothing on the backend ever read multipart bodies or
+        // saved the file — it went nowhere and the invoice was recorded without it. The
+        // POST-body handling above now extracts it into uploaded_invoice_filename/content
+        // when present; save it to disk here and record the resulting filename.
+        std::string attachment_filename;
+        if ( !uploaded_invoice_filename.empty() ) {
+            attachment_filename = processUpload(uploaded_invoice_filename, uploaded_invoice_content);
+            if ( attachment_filename.empty() ) {
+                emit_json_error("Invoice attachment was rejected (unsupported file type or too large).");
+                return 0;
+            }
+        }
+
+        if ( add_invoice(invoicenumber, supplier, details, amount, is_paid, attachment_filename, json_str(jUser, "username"), password, database) ) {
             emit_json_response(invoicenumber + ", has been updated on the system.");
             return 0;
         } else {
@@ -2763,7 +3027,44 @@ int main (int argc, char** argv) {
             return 0;
         }
     }
+    else if ( command == "addspecialorder" ) {
+        // §7.2#2: previously the till only printed a paper receipt and discarded the
+        // order (code/web/scripts/special_orders.js). No permission gate here, matching
+        // every other till-operator-facing sale/order command (addproduct/addsupplier/
+        // etc. are gated because they're structural or financial-reporting; taking a
+        // special order is an ordinary till sale action any operator already performs).
+        std::string order_number, customer_name, customer_address, products, total_value, deposit_amount, due_date;
+        it = queryData.find("order_number");
+        if ( it != queryData.end() ) { order_number = url_decode(it->second); }
+        it = queryData.find("name");
+        if ( it != queryData.end() ) { customer_name = url_decode(it->second); }
+        it = queryData.find("address");
+        if ( it != queryData.end() ) { customer_address = url_decode(it->second); }
+        it = queryData.find("products");
+        if ( it != queryData.end() ) { products = url_decode(it->second); }
+        it = queryData.find("total");
+        if ( it != queryData.end() ) { total_value = url_decode(it->second); }
+        it = queryData.find("deposit");
+        if ( it != queryData.end() ) { deposit_amount = url_decode(it->second); }
+        it = queryData.find("due_date");
+        if ( it != queryData.end() ) { due_date = url_decode(it->second); }
+
+        if ( order_number.empty() || customer_name.empty() || products.empty() || total_value.empty() || deposit_amount.empty() ) {
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
+        }
+
+        if ( add_special_order(order_number, customer_name, customer_address, products, total_value, deposit_amount, due_date,
+                json_str(jUser, "username"), password, database) ) {
+            emit_json_response(order_number + ", has been saved on the system.");
+            return 0;
+        } else {
+            emit_json_error(order_number + ", failed to be saved on the system.");
+            return 0;
+        }
+    }
     else if (command == "adduser" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string new_user, new_password, address, telephone, zip_code, first_name, last_name;
         it = queryData.find("newuser");
         if ( it != queryData.end() ) {
@@ -2886,6 +3187,7 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "salesreport" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string start_date, end_date;
         
         it = queryData.find("start_date");
@@ -2911,6 +3213,7 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "revenuereport" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string start_date, end_date;
         
         it = queryData.find("start_date");
@@ -2936,6 +3239,7 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "inventoryreport" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string response = get_inventory_report(json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
@@ -2973,6 +3277,7 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "taxsummary" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string start_date, end_date;
         
         it = queryData.find("start_date");
@@ -3065,8 +3370,35 @@ int main (int argc, char** argv) {
             "Online Order " + order_id,
             metadata
         );
-        
-        std::cout << response << "\n\n";
+
+        nlohmann::json stripeResp = nlohmann::json::parse(response, nullptr, false);
+        if ( stripeResp.is_discarded() || stripeResp.contains("error") || !stripeResp.contains("id") ) {
+            emit_json_error("Stripe payment failed: " + json_str(stripeResp.value("error", nlohmann::json::object()), "message"));
+            return 0;
+        }
+
+        // Persist a durable record of this payment intent (§3.11/§7.1 finding 9: none of
+        // the payment commands wrote to store.payment_transactions despite the table
+        // existing for exactly this). order_id already exists in store.customer_orders by
+        // this point — the web store always calls webstoreorder before opening the
+        // payment modal — so the FK to customer_orders is satisfied.
+        {
+            Postgresql pgbc = Postgresql( json_str(jUser, "username"), password, m_configuration["server"], m_configuration["port"], database );
+            if ( pgbc._isConnected ) {
+                pgbc.execParams(
+                    "INSERT INTO store.payment_transactions "
+                    "(order_id, stripe_payment_intent_id, customer_email, amount_cents, currency, payment_type, payment_status) "
+                    "VALUES ($1, $2, $3, $4, 'gbp', $5, $6) "
+                    "ON CONFLICT (stripe_payment_intent_id) DO UPDATE SET "
+                    "amount_cents = EXCLUDED.amount_cents, payment_status = EXCLUDED.payment_status, updated_at = CURRENT_TIMESTAMP",
+                    {order_id, json_str(stripeResp, "id"), customer_email, std::to_string(amount_cents),
+                     payment_type, json_str(stripeResp, "status")}
+                );
+                pgbc.close();
+            }
+        }
+
+        std::cout << stripeResp.dump() << "\n\n";
         return 0;
     }
     else if ( command == "confirm_payment" ) {
@@ -3096,8 +3428,28 @@ int main (int argc, char** argv) {
             StripePayment stripe(stripe_key);
             std::string payment_status = stripe.getPaymentIntentStatus(payment_intent_id);
 
-            std::string status_value = json_str(nlohmann::json::parse(payment_status, nullptr, false), "status");
+            nlohmann::json stripeIntent = nlohmann::json::parse(payment_status, nullptr, false);
+            std::string status_value = json_str(stripeIntent, "status");
             if ( status_value.empty() ) { status_value = "pending"; }
+            std::string charge_id = json_str(stripeIntent, "latest_charge");
+
+            // Update the row initiate_payment already created, rather than trust the
+            // client-reported Stripe status alone (§3.11/§7.1 finding 9) — this re-checks
+            // with Stripe directly, so this is a real reconciliation point, not a rubber
+            // stamp of whatever the browser claims happened.
+            {
+                Postgresql pgbc = Postgresql( json_str(jUser, "username"), password, m_configuration["server"], m_configuration["port"], database );
+                if ( pgbc._isConnected ) {
+                    pgbc.execParams(
+                        "UPDATE store.payment_transactions SET "
+                        "payment_status = $1, stripe_charge_id = COALESCE(NULLIF($2, ''), stripe_charge_id), "
+                        "updated_at = CURRENT_TIMESTAMP "
+                        "WHERE stripe_payment_intent_id = $3",
+                        {status_value, charge_id, payment_intent_id}
+                    );
+                    pgbc.close();
+                }
+            }
 
             nlohmann::json j;
             j["success"] = true;
@@ -3155,9 +3507,44 @@ int main (int argc, char** argv) {
                 metadata
             );
 
+            // Fixed: this used to report "success": true unconditionally, without ever
+            // looking at what Stripe actually returned — a declined card or a Stripe-side
+            // error still came back as a reported success.
+            nlohmann::json stripeResp = nlohmann::json::parse(response, nullptr, false);
+            if ( stripeResp.is_discarded() || stripeResp.contains("error") || !stripeResp.contains("id") ) {
+                emit_json_error("Stripe payment failed: " + json_str(stripeResp.value("error", nlohmann::json::object()), "message"));
+                return 0;
+            }
+
+            // Persist the till card sale — previously till_trans_id was generated with
+            // rand() and returned to the caller without being saved anywhere, so it was
+            // unrecoverable the instant the response was sent (§3.11/§7.1 finding 9).
+            // order_id is left NULL: till sales aren't tied to a store.customer_orders row.
+            {
+                Postgresql pgbc = Postgresql( json_str(jUser, "username"), password, m_configuration["server"], m_configuration["port"], database );
+                if ( pgbc._isConnected ) {
+                    pgbc.execParams(
+                        "INSERT INTO store.payment_transactions "
+                        "(stripe_payment_intent_id, customer_email, amount_cents, currency, payment_type, till_transaction_id, payment_status) "
+                        "VALUES ($1, $2, $3, 'gbp', 'till_sale', $4, $5) "
+                        "ON CONFLICT (stripe_payment_intent_id) DO UPDATE SET "
+                        "payment_status = EXCLUDED.payment_status, updated_at = CURRENT_TIMESTAMP",
+                        {json_str(stripeResp, "id"), customer_email, std::to_string(amount_cents), till_trans_id, json_str(stripeResp, "status")}
+                    );
+                    pgbc.close();
+                }
+            }
+
             nlohmann::json j;
             j["success"] = true;
             j["till_transaction_id"] = till_trans_id;
+            j["payment_intent_id"] = json_str(stripeResp, "id");
+            // 7.1#4 (dependency): the PaymentIntent is created with confirm=false (see
+            // stripe.cpp createPaymentIntent) specifically so the client confirms it with
+            // the card details via Stripe.js — but this response never forwarded the
+            // client_secret Stripe returns for exactly that purpose, so the till frontend
+            // had no way to actually charge the card even once it called the right command.
+            j["client_secret"] = json_str(stripeResp, "client_secret");
             std::cout << j.dump() << "\n\n";
         } catch (const std::exception& e) {
             emit_json_error(e.what());
@@ -3165,6 +3552,7 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "process_refund" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string payment_intent_id, reason;
         
         it = queryData.find("payment_intent_id");
@@ -3189,7 +3577,30 @@ int main (int argc, char** argv) {
             StripePayment stripe(stripe_key);
             std::string response = stripe.refundPayment(payment_intent_id, 0, reason);
 
-            std::cout << response << "\n\n";
+            nlohmann::json stripeResp = nlohmann::json::parse(response, nullptr, false);
+            if ( stripeResp.is_discarded() || stripeResp.contains("error") ) {
+                emit_json_error("Stripe refund failed: " + json_str(stripeResp.value("error", nlohmann::json::object()), "message"));
+                return 0;
+            }
+
+            // Record the refund against the original transaction row (§3.11/§7.1 finding
+            // 9) — refundPayment() takes amount_cents=0 above (full refund), so Stripe's
+            // own "amount" in the response is the authoritative refunded amount to store.
+            {
+                Postgresql pgbc = Postgresql( json_str(jUser, "username"), password, m_configuration["server"], m_configuration["port"], database );
+                if ( pgbc._isConnected ) {
+                    pgbc.execParams(
+                        "UPDATE store.payment_transactions SET "
+                        "refund_status = $1, refund_amount_cents = NULLIF($2, '')::numeric, refund_reason = $3, "
+                        "refunded_at = CURRENT_TIMESTAMP, payment_status = 'refunded', updated_at = CURRENT_TIMESTAMP "
+                        "WHERE stripe_payment_intent_id = $4",
+                        {json_str(stripeResp, "status"), json_str(stripeResp, "amount"), reason, payment_intent_id}
+                    );
+                    pgbc.close();
+                }
+            }
+
+            std::cout << stripeResp.dump() << "\n\n";
         } catch (const std::exception& e) {
             emit_json_error(e.what());
         }

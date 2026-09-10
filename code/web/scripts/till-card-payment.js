@@ -3,14 +3,26 @@
  * Handles Stripe card payments for POS transactions
  */
 
-// Initialize Stripe (replace with actual publishable key)
-const STRIPE_PUBLISHABLE_KEY = 'pk_test_1234567890'; // TODO: Set to actual key from config
+// 7.1#5: was hardcoded to the placeholder 'pk_test_1234567890', so card payments could
+// never actually initialize. Now fetched from the backend's own config (getpublicconfig,
+// main.cpp) — a Stripe *publishable* key is safe to expose to the client by design, it's
+// the secret key that must never leave the server, but it still needs to come from real
+// per-deployment config rather than be baked into source.
+let STRIPE_PUBLISHABLE_KEY = '';
 let stripe = null;
 let elements = null;
 let cardElement = null;
 
+async function loadStripePublishableKey() {
+    if (STRIPE_PUBLISHABLE_KEY) return STRIPE_PUBLISHABLE_KEY;
+    const json = await apiCall('getpublicconfig');
+    STRIPE_PUBLISHABLE_KEY = json.stripe_publishable_key || '';
+    return STRIPE_PUBLISHABLE_KEY;
+}
+
 // Initialize Stripe on page load
-function initializeTillStripe() {
+async function initializeTillStripe() {
+    await loadStripePublishableKey();
     if (!STRIPE_PUBLISHABLE_KEY.startsWith('pk_')) {
         console.warn('Stripe publishable key not configured for till');
         return false;
@@ -68,29 +80,26 @@ async function processTillCardSale(total, operatorId, customerEmail = '') {
     }
 
     try {
-        // Create payment intent via backend
-        const response = await fetch('/cgi-bin/boudica_pos', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams({
-                'command': 'initiate_payment',
-                'total': total.toString(),
-                'type': 'till_sale',
-                'operator_id': operatorId,
-                'username': customerEmail || 'till_user'
-            })
+        // Create the PaymentIntent via the backend's dedicated till command. This
+        // previously called `initiate_payment` instead, which requires an `order_id`
+        // referencing a store.customer_orders row (the web store always creates one before
+        // opening its payment modal) — a till sale has no such row, so this failed with
+        // "order_id is required" on every attempt, before even reaching Stripe. It also
+        // never sent a `password` (only `username`), which alone would have failed the
+        // auth check. `till_card_sale` is main.cpp's purpose-built equivalent for a till
+        // sale (operator_id instead of order_id) — apiCall() sends the logged-in
+        // operator's own credentials, same as every other till command.
+        const paymentData = await apiCall('till_card_sale', {
+            total: total.toString(),
+            operator_id: operatorId
         });
-
-        const paymentData = await response.json();
 
         if (paymentData.error) {
             throw new Error(paymentData.error);
         }
 
         const clientSecret = paymentData.client_secret;
-        const paymentIntentId = paymentData.id;
+        const paymentIntentId = paymentData.payment_intent_id;
 
         // Confirm payment with Stripe
         const { paymentIntent, error } = await stripe.confirmCardPayment(clientSecret, {
@@ -126,7 +135,7 @@ async function processTillCardSale(total, operatorId, customerEmail = '') {
 /**
  * Create card payment modal for till
  */
-function createCardPaymentModal() {
+async function createCardPaymentModal() {
     const modalHTML = `
         <div id="till-card-payment-modal" class="modal-overlay" style="display: none; z-index: 1000;">
             <div class="modal" style="max-width: 450px;">
@@ -200,7 +209,7 @@ function createCardPaymentModal() {
     // Insert modal into page if not already present
     if (!document.getElementById('till-card-payment-modal')) {
         document.body.insertAdjacentHTML('beforeend', modalHTML);
-        initializeTillStripe();
+        await initializeTillStripe();
     }
 
     // Setup form handler
@@ -250,6 +259,17 @@ async function handleTillCardPayment(e) {
             operator: operatorName
         };
 
+        // 7.1#4: previously nothing here ever recorded the sale — the card was charged
+        // but stock/sales went unrecorded and the till never printed a receipt or cleared
+        // the cart. completeSale() (till.js) is the same completion path every other
+        // payment method already uses.
+        if (typeof window.completeSale === 'function') {
+            await window.completeSale('Card', null);
+        } else {
+            console.error('completeSale() not found — card was charged but the sale was not recorded.');
+            showToast('Card charged, but the sale could not be recorded. Please record it manually.', 'error');
+        }
+
         // Close modal after delay
         setTimeout(() => {
             modal.style.display = 'none';
@@ -269,8 +289,8 @@ async function handleTillCardPayment(e) {
 /**
  * Open card payment modal for a specific transaction
  */
-function openCardPaymentModal(total, operatorId, reference = '') {
-    createCardPaymentModal(); // Ensure modal exists
+async function openCardPaymentModal(total, operatorId, reference = '') {
+    await createCardPaymentModal(); // Ensure modal exists
 
     const modal = document.getElementById('till-card-payment-modal');
     document.getElementById('till-payment-total').textContent = '£' + total.toFixed(2);
@@ -283,7 +303,7 @@ function openCardPaymentModal(total, operatorId, reference = '') {
 
     // Reinitialize Stripe elements if needed
     if (!stripe) {
-        initializeTillStripe();
+        await initializeTillStripe();
     }
 }
 

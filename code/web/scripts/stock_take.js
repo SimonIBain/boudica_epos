@@ -37,36 +37,18 @@ document.getElementById('tab10')?.addEventListener('keyup', async function(ev) {
 });
 
 async function stockTakeHandleBarcode(scanned_barcode) {
-    const User = get_localStorage('user');
-    const Password = get_localStorage('password');  
     const barcode = scanned_barcode || document.getElementById('st_barcode').value;
 
-    showToast('Adding item to stock count', 'info');  
-    let response = await fetch(`${PGBC_Agents}?username=${User}&command=stocktake&password=${Password}&barcode=${barcode}`);
-    if ( response.status == 200 ) {
-        let response_text = await response.text();
-        if ( DEBUG ) {
-            console.log ( response_text);
-        }
-        const i_end = response_text.indexOf("}");
-        if ( i_end > 0 ) {
-            response_text = response_text.substring(0, i_end + 1);
-        }
-        try {
-            const json = JSON.parse(response_text);
-            if ( json.error != undefined ) {
-                showToast(json.error, 'error');   
-            } else {
-                document.getElementById('stock_take_count').innerText = json.shelf;
-                document.getElementById('store_stock_count').innerText = json.stock;
-            }
-        } catch {/** Do nothing it is the expected result */}
-        document.getElementById('st_barcode').value = '';
-        document.getElementById('st_barcode').focus();
-        return;
+    showToast('Adding item to stock count', 'info');
+    const json = await apiCall('stocktake', { barcode });
+    if ( json.error != undefined ) {
+        showToast(json.error, 'error');
+    } else {
+        document.getElementById('stock_take_count').innerText = json.shelf;
+        document.getElementById('store_stock_count').innerText = json.stock;
     }
     document.getElementById('st_barcode').value = '';
-    showToast('Sorry the service is currently unavailable. Please retry', 'error');
+    document.getElementById('st_barcode').focus();
 }
 
 document.getElementById('set-stock_take-btn').addEventListener('click', async function() {
@@ -78,58 +60,42 @@ document.getElementById('set-stock_take_complete_btn').addEventListener('click',
     document.getElementById('accept-all-discrepancies-btn').style.display = 'none';
     showLoadingOverlay();
     try {
-        const User = get_localStorage('user');
-        const Password = get_localStorage('password');  
-        let response = await fetch(`${PGBC_Agents}?username=${User}&command=completestocktake&password=${Password}`);
-        if ( response.status == 200 ) {
-            let response_text = await response.text();
-            if ( DEBUG ) {
-                console.log ( response_text);
-            }
+        const json = await apiCall('completestocktake');
+        if (json.error) {
+            showToast(json.error, 'error');
+            return;
+        }
 
-            try {
-                const stockDetails = JSON.parse(response_text).stock_count_details;
-                if (!stockDetails) {
-                    showToast('No stock take details found in response.', 'info');
-                    document.getElementById('stock_take_completion').innerHTML = '<p>No items to display.</p>';
-                    return;
-                }
+        const stockDetails = json.stock_count_details;
+        if (!stockDetails) {
+            showToast('No stock take details found in response.', 'info');
+            document.getElementById('stock_take_completion').innerHTML = '<p>No items to display.</p>';
+            return;
+        }
 
-                if (stockDetails.error) {
-                    showToast(stockDetails.error, 'error');
-                    return;
-                }
+        let resultsHtml = '';
+        for (const key in stockDetails) {
+            const iter = stockDetails[key];
+            // Escape single quotes in supplier name to prevent breaking the onclick attribute
+            const safeSupplier = iter.supplier ? iter.supplier.replace(/'/g, "\\'") : '';
+            resultsHtml += `<div class="product_lookup_result_container">
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Barcode:</div><span class="product_lookup_result_item">${iter.barcode}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Supplier:</div><span class="product_lookup_result_item">${iter.supplier || 'N/A'}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Description:</div><span class="product_lookup_result_item">${iter.description || 'N/A'}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Color:</div><span class="product_lookup_result_item">${iter.color || 'N/A'}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Type:</div><span class="product_lookup_result_item">${iter.type || 'N/A'}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Stock Count:</div><input type="number" id="${iter.barcode}_counted" name="stock-count" min="0" step="1" required value="${iter.counted}"></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Stock Registered:</div><span class="product_lookup_result_item">${iter.stock}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Discrepancy:</div><span class="product_lookup_result_item" id="${iter.barcode}_descrepency">${iter.descrepency}</span></div>
+                <div class="product_lookup_result"><button type="button" class="tab-button call_action" id="${iter.barcode}_btn" style="background-color: #486586;" onclick="updateStock('${iter.barcode}', '${safeSupplier}')">Update Stock</button></div>
+            </div> `;
+        }
 
-                let resultsHtml = '';
-                for (const key in stockDetails) {
-                    const iter = stockDetails[key];
-                    // Escape single quotes in supplier name to prevent breaking the onclick attribute
-                    const safeSupplier = iter.supplier ? iter.supplier.replace(/'/g, "\\'") : '';
-                    resultsHtml += `<div class="product_lookup_result_container">
-                        <div class="product_lookup_result"><div class="product_lookup_result_header">Barcode:</div><span class="product_lookup_result_item">${iter.barcode}</span></div>
-                        <div class="product_lookup_result"><div class="product_lookup_result_header">Supplier:</div><span class="product_lookup_result_item">${iter.supplier || 'N/A'}</span></div>
-                        <div class="product_lookup_result"><div class="product_lookup_result_header">Description:</div><span class="product_lookup_result_item">${iter.description || 'N/A'}</span></div>
-                        <div class="product_lookup_result"><div class="product_lookup_result_header">Color:</div><span class="product_lookup_result_item">${iter.color || 'N/A'}</span></div>
-                        <div class="product_lookup_result"><div class="product_lookup_result_header">Type:</div><span class="product_lookup_result_item">${iter.type || 'N/A'}</span></div>
-                        <div class="product_lookup_result"><div class="product_lookup_result_header">Stock Count:</div><input type="number" id="${iter.barcode}_counted" name="stock-count" min="0" step="1" required value="${iter.counted}"></div>
-                        <div class="product_lookup_result"><div class="product_lookup_result_header">Stock Registered:</div><span class="product_lookup_result_item">${iter.stock}</span></div>
-                        <div class="product_lookup_result"><div class="product_lookup_result_header">Discrepancy:</div><span class="product_lookup_result_item" id="${iter.barcode}_descrepency">${iter.descrepency}</span></div>
-                        <div class="product_lookup_result"><button type="button" class="tab-button call_action" id="${iter.barcode}_btn" style="background-color: #486586;" onclick="updateStock('${iter.barcode}', '${safeSupplier}')">Update Stock</button></div>
-                    </div> `;
-                }
-
-                document.getElementById('stock_take_completion').innerHTML = resultsHtml;
-                // Show the 'Accept All' button now that results are loaded and there are items.
-                const acceptAllBtn = document.getElementById('accept-all-discrepancies-btn');
-                if (acceptAllBtn && Object.keys(stockDetails).length > 0) {
-                    acceptAllBtn.style.display = 'inline-block';
-                }
-            } catch (err) {
-                console.error("Error processing stock take completion:", err, response_text);
-                showToast('Failed to process stock take results.', 'error');
-            }
-        } else {
-            showToast('Sorry the service is currently unavailable. Please retry', 'error');
+        document.getElementById('stock_take_completion').innerHTML = resultsHtml;
+        // Show the 'Accept All' button now that results are loaded and there are items.
+        const acceptAllBtn = document.getElementById('accept-all-discrepancies-btn');
+        if (acceptAllBtn && Object.keys(stockDetails).length > 0) {
+            acceptAllBtn.style.display = 'inline-block';
         }
     } catch (error) {
         console.error("Error during 'Complete Stock Take':", error);
@@ -185,49 +151,16 @@ async function updateStock(barcode, supplier) {
     // The API expects a supplier, barcode, and quantity.
     if (barcode && quantity && Number(quantity) >= 0) {
         showToast(`Updating stock for ${barcode} to ${quantity}...`, 'info');
-        
-        const params = new URLSearchParams({
-            username: User,
-            password: Password,
-            command: 'updatestock',
-            quantity: quantity,
-            barcode: barcode
-        });
-        
-        const response = await fetch(`${PGBC_Agents}?${params.toString()}`);
 
-        if (response.ok) {
-            let response_text = await response.text();
-            if (DEBUG) {
-                console.log(response_text);
-            }
+        const json = await apiCall('updatestock', { quantity, barcode });
 
-            const i_end = response_text.indexOf("}");
-            if (i_end > 0) {
-                response_text = response_text.substring(0, i_end + 1);
-            }
-
-            try {
-                const json = JSON.parse(response_text);
-                if (json.error) {
-                    showToast(json.error, 'error');
-                } else if (json.response) {
-                    showToast(json.response, 'success');
-                    quantityInput.style.backgroundColor = '#d4edda'; // green background to show success
-                } else {
-                    showToast('Stock updated, but no confirmation received.', 'info');
-                }
-            } catch (e) {
-                if (response_text.toLowerCase().includes('success') || response_text.toLowerCase().includes('updated')) {
-                    showToast('Stock updated successfully!', 'success');
-                    quantityInput.style.backgroundColor = '#d4edda';
-                } else {
-                    console.error("Error parsing update stock response:", e, response_text);
-                    showToast('Received an invalid response from server.', 'error');
-                }
-            }
+        if (json.error) {
+            showToast(json.error, 'error');
+        } else if (json.response) {
+            showToast(json.response, 'success');
+            quantityInput.style.backgroundColor = '#d4edda'; // green background to show success
         } else {
-            showToast('Sorry, the service is currently unavailable. Please try again.', 'error');
+            showToast('Stock updated, but no confirmation received.', 'info');
         }
     } else {
         showToast('Invalid data. Could not update stock.', 'error');

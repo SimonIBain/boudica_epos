@@ -20,29 +20,15 @@ async function loadOrderHistory() {
     }
 
     try {
-        const params = new URLSearchParams({
-            username: User,
-            password: Password,
-            command: 'orderhistory',
-            email: customerEmail
-        });
+        const jsonData = await apiCall('orderhistory', { email: customerEmail });
 
-        let response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-        let responseText = await response.text();
-        
-        // Extract JSON from response
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const jsonData = JSON.parse(jsonMatch[0]);
-            
-            if (jsonData.error) {
-                showToast(jsonData.error, 'error');
-                document.getElementById('orders-container').innerHTML = '<p>No orders found for this customer</p>';
-                return;
-            }
-
-            displayOrderHistory(jsonData);
+        if (jsonData.error) {
+            showToast(jsonData.error, 'error');
+            document.getElementById('orders-container').innerHTML = '<p>No orders found for this customer</p>';
+            return;
         }
+
+        displayOrderHistory(jsonData);
     } catch (error) {
         console.error('Error loading order history:', error);
         showToast('Error loading order history', 'error');
@@ -147,48 +133,14 @@ async function viewOrderReceipt(orderId) {
     }
 
     try {
-        const params = new URLSearchParams({
-            username: User,
-            password: Password,
-            command: 'getreceipt',
-            order_id: orderId
-        });
+        const jsonData = await apiCall('getreceipt', { order_id: orderId });
 
-        let response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-        let responseText = await response.text();
-        console.log('Response received, length:', responseText.length);
-        console.log('Response text:', responseText.substring(0, 500));
-        
-        // Extract JSON from response
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        console.log('jsonMatch:', !!jsonMatch);
-        
-        if (jsonMatch) {
-            console.log('JSON extracted, attempting parse...');
-            try {
-                const jsonData = JSON.parse(jsonMatch[0]);
-                console.log('JSON parsed successfully');
-                console.log('jsonData keys:', Object.keys(jsonData));
-                console.log('has error?', !!jsonData.error);
-                console.log('has items?', !!jsonData.items, jsonData.items ? jsonData.items.length : 'N/A');
-                
-                if (jsonData.error) {
-                    console.log('ERROR in response:', jsonData.error);
-                    showToast(jsonData.error, 'error');
-                    return;
-                }
-
-                console.log('About to call displayReceipt with:', jsonData);
-                displayReceipt(jsonData);
-                console.log('displayReceipt returned');
-            } catch (parseError) {
-                console.error('JSON.parse() failed:', parseError);
-                console.error('String that failed to parse:', jsonMatch[0].substring(0, 200));
-                throw parseError;
-            }
-        } else {
-            console.log('No JSON match found in response');
+        if (jsonData.error) {
+            showToast(jsonData.error, 'error');
+            return;
         }
+
+        displayReceipt(jsonData);
     } catch (error) {
         console.error('Error loading receipt:', error);
         showToast('Error loading receipt: ' + error.message, 'error');

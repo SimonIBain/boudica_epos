@@ -16,11 +16,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!User || !Password) { throw new Error("User not logged in"); }
 
             showToast('Processing End of Day...', 'info');
-            const params = new URLSearchParams({ username: User, password: Password, command: 'cashup' });
-            const response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-            if (!response.ok) throw new Error(`Network response was not ok: ${response.statusText}`);
-
-            const data = await response.json();
+            const data = await apiCall('cashup');
             if (data.error) throw new Error(data.error);
 
             // Populate the form with the final, confirmed values from the 'cashup' call

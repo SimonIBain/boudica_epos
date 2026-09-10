@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', function() {
         return;
     }
 
-    specialOrderForm.addEventListener('submit', function(event) {
+    specialOrderForm.addEventListener('submit', async function(event) {
         event.preventDefault();
 
         const orderDetails = {
@@ -27,6 +27,39 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
+        const User = get_localStorage('user');
+        const Password = get_localStorage('password');
+        if (!User || !Password) {
+            document.getElementById('login_div').style.display = 'flex';
+            showToast('You must be logged in to take a special order.', 'error');
+            return;
+        }
+
+        // Save the order before printing/clearing — previously this only printed a paper
+        // receipt and discarded the order entirely, so a lost receipt meant there was no
+        // way to look it up, track fulfillment, or reconcile the deposit later.
+        const orderNumber = 'SO-' + Date.now();
+        showToast('Saving special order...', 'info');
+        try {
+            const json = await apiCall('addspecialorder', {
+                order_number: orderNumber,
+                name: orderDetails.name,
+                address: orderDetails.address,
+                products: orderDetails.products,
+                total: orderDetails.total.toString(),
+                deposit: orderDetails.deposit.toString(),
+                due_date: orderDetails.dueDate
+            });
+            if (json.error) {
+                showToast(json.error, 'error');
+                return;
+            }
+        } catch (error) {
+            console.error('Failed to save special order:', error);
+            showToast('An error occurred while saving the special order.', 'error');
+            return;
+        }
+
         // Call the printer function
         if (typeof printSpecialOrderReceipt === 'function') {
             printSpecialOrderReceipt(orderDetails);
@@ -34,9 +67,6 @@ document.addEventListener('DOMContentLoaded', function() {
             console.error('printSpecialOrderReceipt function is not defined. Make sure printer.js is loaded correctly.');
             showToast('Error: Printing function not available.', 'error');
         }
-
-        // Optionally, send data to a server here.
-        // For now, we just print and clear.
 
         showToast('Special order created successfully.', 'success');
         specialOrderForm.reset();

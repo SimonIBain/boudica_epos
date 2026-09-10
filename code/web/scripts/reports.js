@@ -70,31 +70,16 @@ async function loadReport() {
 }
 
 async function loadSalesReport(user, password, startDate, endDate) {
-    const params = new URLSearchParams({
-        username: user,
-        password: password,
-        command: 'salesreport',
-        start_date: startDate,
-        end_date: endDate
-    });
-
     try {
-        let response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-        let responseText = await response.text();
-        
-        // Extract JSON
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const jsonData = JSON.parse(jsonMatch[0]);
-            
-            if (jsonData.error) {
-                showToast(jsonData.error, 'error');
-                return;
-            }
+        const jsonData = await apiCall('salesreport', { start_date: startDate, end_date: endDate });
 
-            currentReportData = jsonData;
-            displaySalesReport(jsonData);
+        if (jsonData.error) {
+            showToast(jsonData.error, 'error');
+            return;
         }
+
+        currentReportData = jsonData;
+        displaySalesReport(jsonData);
     } catch (error) {
         console.error('Error loading sales report:', error);
         showToast('Error loading sales report', 'error');
@@ -139,30 +124,16 @@ function displaySalesReport(data) {
 }
 
 async function loadRevenueReport(user, password, startDate, endDate) {
-    const params = new URLSearchParams({
-        username: user,
-        password: password,
-        command: 'revenuereport',
-        start_date: startDate,
-        end_date: endDate
-    });
-
     try {
-        let response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-        let responseText = await response.text();
-        
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const jsonData = JSON.parse(jsonMatch[0]);
-            
-            if (jsonData.error) {
-                showToast(jsonData.error, 'error');
-                return;
-            }
+        const jsonData = await apiCall('revenuereport', { start_date: startDate, end_date: endDate });
 
-            currentReportData = jsonData;
-            displayRevenueReport(jsonData);
+        if (jsonData.error) {
+            showToast(jsonData.error, 'error');
+            return;
         }
+
+        currentReportData = jsonData;
+        displayRevenueReport(jsonData);
     } catch (error) {
         console.error('Error loading revenue report:', error);
         showToast('Error loading revenue report', 'error');
@@ -205,28 +176,16 @@ function displayRevenueReport(data) {
 }
 
 async function loadInventoryReport(user, password, startDate, endDate) {
-    const params = new URLSearchParams({
-        username: user,
-        password: password,
-        command: 'inventoryreport'
-    });
-
     try {
-        let response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-        let responseText = await response.text();
-        
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const jsonData = JSON.parse(jsonMatch[0]);
-            
-            if (jsonData.error) {
-                showToast(jsonData.error, 'error');
-                return;
-            }
+        const jsonData = await apiCall('inventoryreport');
 
-            currentReportData = jsonData;
-            displayInventoryReport(jsonData);
+        if (jsonData.error) {
+            showToast(jsonData.error, 'error');
+            return;
         }
+
+        currentReportData = jsonData;
+        displayInventoryReport(jsonData);
     } catch (error) {
         console.error('Error loading inventory report:', error);
         showToast('Error loading inventory report', 'error');
@@ -271,30 +230,16 @@ function displayInventoryReport(data) {
 }
 
 async function loadTaxReport(user, password, startDate, endDate) {
-    const params = new URLSearchParams({
-        username: user,
-        password: password,
-        command: 'taxsummary',
-        start_date: startDate,
-        end_date: endDate
-    });
-
     try {
-        let response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-        let responseText = await response.text();
-        
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const jsonData = JSON.parse(jsonMatch[0]);
-            
-            if (jsonData.error) {
-                showToast(jsonData.error, 'error');
-                return;
-            }
+        const jsonData = await apiCall('taxsummary', { start_date: startDate, end_date: endDate });
 
-            currentReportData = jsonData;
-            displayTaxReport(jsonData);
+        if (jsonData.error) {
+            showToast(jsonData.error, 'error');
+            return;
         }
+
+        currentReportData = jsonData;
+        displayTaxReport(jsonData);
     } catch (error) {
         console.error('Error loading tax report:', error);
         showToast('Error loading tax report', 'error');

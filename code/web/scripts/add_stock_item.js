@@ -48,41 +48,19 @@ async function addStockHandleBarcode(scanned_barcode) {
 
     // When a barcode is scanned, we first check if it already exists.
     showToast(`Checking barcode: ${scanned_barcode}`, 'info');
-    let response = await fetch(`${PGBC_Agents}?username=${User}&command=getdetails&password=${Password}&barcode=${scanned_barcode}`);
-    if (response.status == 200) {
-        let response_text = await response.text();
-        if (DEBUG) {
-            console.log(response_text);
-        }
-        const i_end = response_text.indexOf("}");
-        if (i_end > 0) {
-            response_text = response_text.substring(0, i_end + 1);
-        }
-        try {
-            const json = JSON.parse(response_text);
-            if (json.error) {
-                // An error like "not found" is a good thing here, it means the barcode is available.
-                if (json.error.toLowerCase().includes('not found')) {
-                    showToast('Barcode is available.', 'success');
-                    document.getElementById('stock-barcode').value = scanned_barcode;
-                } else {
-                    showToast(json.error, 'error');
-                }
-            } else {
-                // If we get details, it means the barcode is already in the system.
-                if (json.price !== undefined) {
-                    showToast('This barcode is already in the system!', 'error');
-                }
-            }
-        } catch (e) {
-            console.error("Error parsing barcode check response:", e, response_text);
-            // If parsing fails, it might be a non-JSON error response.
-            // We can assume the barcode is available and let the user proceed.
-            document.getElementById('stock-barcode').value = scanned_barcode;
-        }
-        return;
+    const json = await apiCall('getdetails', { barcode: scanned_barcode });
+    // getdetails wraps its result in "products_search_details" (even for an exact
+    // barcode match) rather than returning a bare object or an "error" for "not
+    // found" — see the identical fix in till.js's handleBarCode (7.1#3). A genuine
+    // "not found" is a one-item array of empty strings, not an empty array, so check
+    // for an actual barcode rather than array truthiness.
+    const product = json.products_search_details && json.products_search_details[0];
+    if (json.error || !product || !product.barcode) {
+        showToast('Barcode is available.', 'success');
+        document.getElementById('stock-barcode').value = scanned_barcode;
+    } else {
+        showToast('This barcode is already in the system!', 'error');
     }
-    showToast('Sorry, the service is currently unavailable. Please retry', 'error');
 }
 
 document.getElementById('add-stock-form').addEventListener('submit', async function(ev) {
@@ -103,69 +81,28 @@ document.getElementById('add-stock-form').addEventListener('submit', async funct
     const barcode = document.getElementById("stock-barcode").value;
 
     if (supplier && description && price && quantity  > 0 && barcode) {
-        let response;
         showToast('Adding stock item...', 'info');
-        // Assuming the command is 'addstockitem' based on the form's purpose.
         const qty = Number(quantity);
-         //queryString="username=sibain@omniindex.io&command=addproduct&password=Ch35t3r&supplier=Debs J Bain&barcode=973098767891&price=8.50&description=Needle thread wall hanging small.";
-         if ( isNaN(qty) || qty <= 0 ) {
-            const params = new URLSearchParams({
-                username: User,
-                password: Password,
-                command: 'addproduct',
-                supplier: supplier,
-                description: description,
-                price: price,
-                barcode: barcode
-            });
-            response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-        } else {
-            //queryString="username=sibain@omniindex.io&command=updatestock&password=Ch35t3r&supplier=Debs J Bain&barcode=973098767891&quantity=3";
-            const params = new URLSearchParams({
-                username: User,
-                password: Password,
-                command: 'updatestock',
-                supplier: supplier,
-                quantity: quantity,
-                barcode: barcode
-            });
-            response = await fetch(`${PGBC_Agents}?${params.toString()}`);            
-        }
+        const json = ( isNaN(qty) || qty <= 0 )
+            ? await apiCall('addproduct', { supplier, description, price, barcode })
+            : await apiCall('updatestock', { supplier, quantity, barcode });
 
-        if (response.status == 200) {
-            let response_text = await response.text();
-            if (DEBUG) {
-                console.log(response_text);
-            }
-            const i_end = response_text.indexOf("}");
-            if (i_end > 0) {
-                response_text = response_text.substring(0, i_end + 1);
-            }
-            try {
-                const json = JSON.parse(response_text);
-                if (json.error) {
-                    showToast(json.error, 'error');
-                } else if (json.response) {
-                    showToast(json.response, 'success');
-                    const keepSupplier = document.getElementById('keep-supplier-checkbox').checked;
-                    if (keepSupplier) {
-                        // Reset all fields except the supplier
-                        document.getElementById("stock-description").value = '';
-                        document.getElementById("stock-price").value = '';
-                        document.getElementById("stock-quantity").value = '0';
-                        document.getElementById("stock-barcode").value = '';
-                    } else {
-                        document.getElementById('add-stock-form').reset();
-                    }
-                } else {
-                    showToast('Item added, but no confirmation received.', 'info');
-                }
-            } catch (e) {
-                console.error("Error parsing add stock item response:", e, response_text);
-                showToast('Received an invalid response from server.', 'error');
+        if (json.error) {
+            showToast(json.error, 'error');
+        } else if (json.response) {
+            showToast(json.response, 'success');
+            const keepSupplier = document.getElementById('keep-supplier-checkbox').checked;
+            if (keepSupplier) {
+                // Reset all fields except the supplier
+                document.getElementById("stock-description").value = '';
+                document.getElementById("stock-price").value = '';
+                document.getElementById("stock-quantity").value = '0';
+                document.getElementById("stock-barcode").value = '';
+            } else {
+                document.getElementById('add-stock-form').reset();
             }
         } else {
-            showToast('Sorry, the service is currently unavailable. Please try again.', 'error');
+            showToast('Item added, but no confirmation received.', 'info');
         }
     } else {
         showToast('Please provide all of the required information.', 'error');

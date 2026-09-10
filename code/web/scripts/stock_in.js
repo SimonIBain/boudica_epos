@@ -67,40 +67,17 @@ async function stockInItem(barcode, quantity) {
     // Based on till.js, to ADD stock, we need to send a NEGATIVE quantity.
     const apiQuantity = -parseInt(quantity, 10);
 
-    const params = new URLSearchParams({
-        username: User,
-        password: Password,
-        command: 'updatestock',
-        quantity: apiQuantity.toString(),
-        barcode: barcode
-    });
-
     try {
-        const response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-        let response_text = await response.text();
-        if (DEBUG) {
-            console.log("Stock In Response:", response_text);
-        }
-        // Handle potential non-JSON text at the end of the response
-        const i_end = response_text.indexOf("}");
-        if (i_end > 0) {
-            response_text = response_text.substring(0, i_end + 1);
-        }
-
-        if (response.ok) {
-            const json = JSON.parse(response_text);
-            if (json.error) {
-                showToast(json.error, 'error');
-            } else if (json.response) {
-                showToast(json.response, 'success');
-                // Clear fields after success
-                document.getElementById('stock-in-barcode').value = '';
-                document.getElementById('stock-in-quantity').value = '1';
-            } else {
-                showToast('Stock updated, but no confirmation received.', 'info');
-            }
+        const json = await apiCall('updatestock', { quantity: apiQuantity.toString(), barcode });
+        if (json.error) {
+            showToast(json.error, 'error');
+        } else if (json.response) {
+            showToast(json.response, 'success');
+            // Clear fields after success
+            document.getElementById('stock-in-barcode').value = '';
+            document.getElementById('stock-in-quantity').value = '1';
         } else {
-            showToast(`Error: ${response.statusText}`, 'error');
+            showToast('Stock updated, but no confirmation received.', 'info');
         }
     } catch (error) {
         console.error('Failed to add stock:', error);

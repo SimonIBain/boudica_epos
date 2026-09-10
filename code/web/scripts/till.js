@@ -23,30 +23,20 @@ document.getElementById('till').addEventListener('keyup', async function(ev) {
 });
 
 async function handleBarCode(scanned_barcode) {
-    const User = get_localStorage('user');
-    const Password = get_localStorage('password');
     showToast(`Looking up barcode: ${scanned_barcode}`, 'info');
-    let response = await fetch(`${PGBC_Agents}?username=${User}&command=getdetails&password=${Password}&barcode=${scanned_barcode}`);
-    if ( response.status == 200 ) {
-        let response_text = await response.text();
-        if ( DEBUG ) {
-            console.log ( response_text);
-        }
-        const i_end = response_text.indexOf("}");
-        if ( i_end > 0 ) {
-            response_text = response_text.substring(0, i_end + 1);
-        }
-        try {
-            const json = JSON.parse(response_text);
-            if ( json.error != undefined ) {
-                showToast('Please manually add the price of the item', 'error');   
-            } else {
-                addItemToReceipt(json.description, json.rs_price, scanned_barcode);
-            }
-        } catch {/** Do nothing it is the expected result */}
-        return;
+    const json = await apiCall('getdetails', { barcode: scanned_barcode });
+    // getdetails always wraps its result in a "products_search_details" array (even for
+    // an exact single-barcode match) with the price under "price", not "rs_price" — 7.1#3
+    // previously read json.description/json.rs_price straight off the (never-reached,
+    // truncated) top level, so a scan silently did nothing. A genuine "not found" is not
+    // an empty array or an "error" — it's a one-item array of empty strings (a pre-existing
+    // backend quirk, §7.3#8), so check for an actual barcode rather than array truthiness.
+    const product = json.products_search_details && json.products_search_details[0];
+    if ( json.error != undefined || !product || !product.barcode ) {
+        showToast('Please manually add the price of the item', 'error');
+    } else {
+        addItemToReceipt(product.description, product.price, scanned_barcode);
     }
-    showToast('Sorry the service is currently unavailable. Please retry', 'error');
 }
 
 // Make this function globally available for other scripts like product_lookup.js
@@ -425,76 +415,100 @@ function printLastReceipt() {
 async function handlePayment(method, cashTendered = null) {
     const total = currentSaleItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
-    if (currentSaleItems.length > 0) {
-        // Handle card payment via Stripe
-        if (method === "Card") {
-            if (typeof window.tillCardPayment === 'undefined' || typeof window.tillCardPayment.openCardPaymentModal !== 'function') {
-                showToast('Card payment module not loaded. Please refresh the page.', 'error');
-                return;
-            }
-            
-            const operatorId = get_localStorage('user') || 'unknown';
-            const reference = 'TILL_' + Date.now();
-            
-            try {
-                window.tillCardPayment.openCardPaymentModal(total, operatorId, reference);
-                // The payment module will handle the rest
-                return;
-            } catch (error) {
-                showToast('Error opening card payment: ' + error.message, 'error');
-                return;
-            }
-        }
-
-        // Handle stock updates for any refunded items
-        await updateStockForTransaction(currentSaleItems, method);
-
-        if (total !== 0) {
-            const tax = total - (total / (1 + (TAX_RATE / 100)));
-            let changeDue = 0;
-            if (method === "Cash" && cashTendered !== null && total > 0) {
-                changeDue = cashTendered - total;
-            }
-
-            // Store details for re-printing
-            lastSaleDetails = {
-                items: JSON.parse(JSON.stringify(currentSaleItems)), // Deep copy of items
-                total: total,
-                tax: tax,
-                paymentMethod: method,
-                cashTendered: cashTendered,
-                changeDue: changeDue
-            };
-
-            // Automatically print the receipt
-            if (typeof printReceipt === 'function') {
-                printReceipt(
-                    lastSaleDetails.items,
-                    lastSaleDetails.total,
-                    lastSaleDetails.tax,
-                    lastSaleDetails.paymentMethod,
-                    lastSaleDetails.cashTendered,
-                    lastSaleDetails.changeDue
-                );
-            } else {
-                showToast('Printing function is not available.', 'error');
-            }
-
-            if (total > 0) {
-                 showToast(`Sale complete. Change due: £${changeDue.toFixed(2) || 0.00}`, 'success');
-            } else {
-                 showToast(`Refund of £${(-total).toFixed(2)} processed.`, 'success');
-            }
-        } else {
-            showToast('Even exchange completed.', 'success');
-        }
-
-        // After the transaction is processed and the receipt is printed, clear the sale for the next customer.
-        clearSale();
-    } else {
+    if (currentSaleItems.length === 0) {
         showToast('No items in the current sale.', 'info');
+        return;
     }
+
+    // Handle card payment via Stripe. Unlike every other method, this doesn't complete
+    // the sale itself — it just opens the modal. 7.1#4: the modal's own success handler
+    // (till-card-payment.js) now calls window.completeSale() once Stripe actually confirms
+    // the charge, which is the same completion path every other payment method uses below.
+    if (method === "Card") {
+        if (typeof window.tillCardPayment === 'undefined' || typeof window.tillCardPayment.openCardPaymentModal !== 'function') {
+            showToast('Card payment module not loaded. Please refresh the page.', 'error');
+            return;
+        }
+
+        const operatorId = get_localStorage('user') || 'unknown';
+        const reference = 'TILL_' + Date.now();
+
+        try {
+            await window.tillCardPayment.openCardPaymentModal(total, operatorId, reference);
+        } catch (error) {
+            showToast('Error opening card payment: ' + error.message, 'error');
+        }
+        return;
+    }
+
+    await completeSale(method, cashTendered);
 }
+
+/**
+ * Finishes a sale: records the stock movement in the backend, prints the receipt, and
+ * clears the till. Shared by every payment method (cash/card/etc.) so card payments go
+ * through the exact same completion path as everything else instead of a separate,
+ * partial one (7.1#4).
+ *
+ * 7.1#6: the till used to print the receipt and clear the sale unconditionally, even when
+ * the backend's own stock/sale update failed (including the crash bugs in 7.1#1/#2, and any
+ * ordinary {"error": ...} response) — the CGI backend always answers HTTP 200 regardless of
+ * business-logic outcome, so `response.ok` alone never caught this. Now the sale is only
+ * completed — receipt printed, till cleared — if the backend actually confirmed it.
+ */
+async function completeSale(method, cashTendered = null) {
+    const total = currentSaleItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+
+    const stockUpdateOk = await updateStockForTransaction(currentSaleItems, method);
+    if (!stockUpdateOk) {
+        showToast('Sale NOT recorded — items are still on the till. Please retry or record manually.', 'error');
+        return;
+    }
+
+    if (total !== 0) {
+        const tax = total - (total / (1 + (TAX_RATE / 100)));
+        let changeDue = 0;
+        if (method === "Cash" && cashTendered !== null && total > 0) {
+            changeDue = cashTendered - total;
+        }
+
+        // Store details for re-printing
+        lastSaleDetails = {
+            items: JSON.parse(JSON.stringify(currentSaleItems)), // Deep copy of items
+            total: total,
+            tax: tax,
+            paymentMethod: method,
+            cashTendered: cashTendered,
+            changeDue: changeDue
+        };
+
+        // Automatically print the receipt
+        if (typeof printReceipt === 'function') {
+            printReceipt(
+                lastSaleDetails.items,
+                lastSaleDetails.total,
+                lastSaleDetails.tax,
+                lastSaleDetails.paymentMethod,
+                lastSaleDetails.cashTendered,
+                lastSaleDetails.changeDue
+            );
+        } else {
+            showToast('Printing function is not available.', 'error');
+        }
+
+        if (total > 0) {
+             showToast(`Sale complete. Change due: £${changeDue.toFixed(2) || 0.00}`, 'success');
+        } else {
+             showToast(`Refund of £${(-total).toFixed(2)} processed.`, 'success');
+        }
+    } else {
+        showToast('Even exchange completed.', 'success');
+    }
+
+    // After the transaction is processed and the receipt is printed, clear the sale for the next customer.
+    clearSale();
+}
+window.completeSale = completeSale;
 
 async function updateStockForTransaction(items, method) {
     // Filter for items sold (positive price) and items refunded (negative price).
@@ -518,70 +532,42 @@ async function updateStockForTransaction(items, method) {
         });
     }
 
-    if (stockPromises.length === 0) return;
+    if (stockPromises.length === 0) return true;
 
     try {
         await Promise.all(stockPromises);
         showToast('Stock levels updated successfully.', 'success');
+        return true;
     } catch (error) {
         console.error('One or more stock updates failed:', error);
-        showToast('Error updating stock levels. Please check manually.', 'error');
+        return false;
     }
 }
 
 async function removeFromStock(barcode, quantity, price, method) {
-    const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    if (!User || !Password) throw new Error("User not logged in");
     if ( !barcode ) { barcode = 'manual sale'; }
-
-    const params = new URLSearchParams({ username: User, password: Password, command: 'sellitem', quantity: quantity.toString(), barcode: barcode, price: price.toString(), type: method });
-    let updateStockResponse = await fetch(`${PGBC_Agents}?${params.toString()}`);
-    if (!updateStockResponse.ok) throw new Error(`Failed to update stock for ${barcode}`);
+    const json = await apiCall('sellitem', { quantity: quantity.toString(), barcode: barcode, price: price.toString(), type: method });
+    if (json.error) throw new Error(json.error);
 }
 
 async function restockItem(barcode, quantity) {
-    const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    if (!User || !Password) throw new Error("User not logged in");
     // To add an item back to stock (refund), the API expects a negative quantity.
     const apiQuantity = -Math.abs(quantity);
     const apiBarcode = barcode || 'manual refund'; // Handle manual refunds
 
-    const params = new URLSearchParams({ username: User, password: Password, command: 'updatestock', quantity: apiQuantity.toString(), barcode: apiBarcode });
-    let updateStockResponse = await fetch(`${PGBC_Agents}?${params.toString()}`);
-    if (!updateStockResponse.ok) throw new Error(`Failed to update stock for ${apiBarcode}`);
+    const json = await apiCall('updatestock', { quantity: apiQuantity.toString(), barcode: apiBarcode });
+    if (json.error) throw new Error(json.error);
 }
 
 async function loadWorkshops() {
-    const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    
     try {
-        const response = await fetch(`${PGBC_Agents}?username=${User}&command=getworkshops&password=${Password}`, {
-            signal: AbortSignal.timeout(10000)
-        });
-        
-        if (response.status !== 200) {
-            console.error('Failed to fetch workshops');
-            return;
-        }
-        
-        const responseText = await response.text();
-        if (DEBUG) {
-            console.log('Workshops response:', responseText);
-        }
-        
-        const endIndex = responseText.indexOf("}]}") + 3;
-        const jsonStr = responseText.substring(0, endIndex);
-        
-        const json = JSON.parse(jsonStr);
-        
+        const json = await apiCall('getworkshops');
+
         if (json.error || !json.workshops) {
             console.error('Error fetching workshops:', json.error);
             return;
         }
-        
+
         const quickAddGrid = document.querySelector('.quick-add-grid');
         if (!quickAddGrid) {
             console.error('Quick add grid not found');

@@ -181,8 +181,11 @@ std::string StripePayment::refundPayment(
     std::string payment_id,
     int amount_cents,
     std::string reason) {
-    
-    std::string data = "charge=" + urlEncode(payment_id);
+
+    // Fixed: this sent "charge=<id>", but every caller (process_refund, main.cpp) passes
+    // a PaymentIntent ID ("pi_..."), not a Charge ID ("ch_...") — Stripe's refunds
+    // endpoint needs "payment_intent=" for that ID shape.
+    std::string data = "payment_intent=" + urlEncode(payment_id);
     data += "&reason=" + urlEncode(reason);
     
     if (amount_cents > 0) {

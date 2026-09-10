@@ -68,27 +68,7 @@ async function productHandleBarcode(scanned_barcode = '') {
     resultsContainer.innerHTML = '<p>Searching...</p>';
 
     try {
-        const params = new URLSearchParams({
-            username: User,
-            command: 'getdetails',
-            password: Password,
-            barcode: barcode // The API might also handle descriptions
-        });
-        const response = await fetch(`${PGBC_Agents}?${params.toString()}`);
-
-        if (!response.ok) {
-            showToast('The application returned an unrecognized error. Please retry.', 'error');
-            resultsContainer.innerHTML = '<p>Error fetching product details.</p>';
-            return;
-        }
-
-        let response_text = await response.text();
-
-        if (DEBUG) {
-            console.log("Product lookup response:", response_text);
-        }
-
-        const json = JSON.parse(response_text);
+        const json = await apiCall('getdetails', { barcode }); // The API might also handle descriptions
 
         if (json.error) {
             showToast(json.error, 'error');
