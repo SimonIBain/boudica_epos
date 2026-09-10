@@ -9,12 +9,14 @@
 }
 
 :root {
-    /* Primary Colors */
-    --primary: #0066cc;
-    --primary-dark: #004499;
-    --primary-light: #3399ff;
-    --accent: #ff6b35;
-    --accent-light: #ffa566;
+    /* Primary Colors — Boudica brand navy + gold, sampled from the real
+       logo/favicon (content/interfaces/html/chat_interface/assets in the
+       boudica_slm repo: #25214e navy, #b8860b gold) */
+    --primary: #25214e;
+    --primary-dark: #17142e;
+    --primary-light: #486586;
+    --accent: #b8860b;
+    --accent-light: #d4a017;
     
     /* Semantic Colors */
     --success: #2ecc71;
@@ -72,6 +74,7 @@ body {
     justify-content: space-between;
     align-items: center;
     box-shadow: var(--shadow-lg);
+    border-bottom: 3px solid var(--accent);
     height: 70px;
     flex-shrink: 0;
 }
@@ -153,8 +156,8 @@ body {
 }
 
 .tab-button.active {
-    color: var(--primary);
-    border-bottom-color: var(--primary);
+    color: var(--accent);
+    border-bottom-color: var(--accent);
 }
 
 /* Primary vs Secondary Tab Groups */
@@ -852,6 +855,13 @@ tr:hover {
     animation: slideUp 0.3s ease-out;
 }
 
+.login-logo {
+    display: block;
+    height: 64px;
+    width: auto;
+    margin: 0 auto var(--spacing-md);
+}
+
 .login-box h2 {
     font-size: 1.6em;
     margin-bottom: var(--spacing-xl);
@@ -877,12 +887,12 @@ tr:hover {
 }
 
 .login-buttons button:first-child {
-    background: var(--primary);
+    background: var(--accent);
     color: white;
 }
 
 .login-buttons button:first-child:hover {
-    background: var(--primary-dark);
+    background: var(--accent-light);
 }
 
 .login-buttons button:last-child {

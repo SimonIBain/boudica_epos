@@ -9,7 +9,7 @@
         <meta http-equiv="Expires" content="0" />
         <!-- End Prevent Caching -->
         <title>Boudica POS - The Curiosity Cabins</title>
-        <link rel="icon" type="image/x-icon" href="assets/dropblock.ico"> 
+        <link rel="icon" type="image/x-icon" href="assets/boudica-favicon.ico">
         <link rel="stylesheet" href="styles/modern.css">    
         <link rel="stylesheet" href="styles/toast.css">        
         <!-- Star Printer -->
@@ -57,7 +57,7 @@
     <body>
         <div class="header-container">
             <div class="header-left">
-                <img src="assets/omniindex.png" alt="Boudica AI POS" class="header-logo">
+                <img src="assets/boudica-logo.png" alt="Boudica AI POS" class="header-logo">
                 <div class="header-title" id="user_name">AI-EPOS Till / Curiosity Cabin</div>
             </div>
             <div class="header-right">
@@ -70,6 +70,7 @@
         <div id="login_div">
             <div class="login-container" id="loginPromptBox_a">
                 <div class="login-box">
+                    <img src="assets/boudica-logo.png" alt="Boudica AI" class="login-logo">
                     <h2>Boudica AI AI-EPOS Till</h2>
                     <div class="form-group">
                         <label for="email">Email:</label>
@@ -161,8 +162,8 @@
                             <div class="payment-methods">
                                 <button class="payment-btn payment-btn-cash" data-method="Cash">💵 Cash</button>
                                 <button class="payment-btn payment-btn-card" data-method="Card">💳 Card</button>
-                                <button class="payment-btn" data-action="discount" style="background-color: #8abfeb;">% Discount</button>
-                                <button class="payment-btn" data-action="price-override" style="background-color: #8abfeb;">Price Override</button>
+                                <button class="payment-btn" data-action="discount" style="background-color: var(--primary-light); color: white;">% Discount</button>
+                                <button class="payment-btn" data-action="price-override" style="background-color: var(--primary-light); color: white;">Price Override</button>
                             </div>
                         </div>
                     </div>
