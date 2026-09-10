@@ -1,6 +1,10 @@
 
 let interval;
-let barcode;
+// Must start as '' not undefined — the keyup handler below does `barcode += ev.key` on
+// every keystroke including the very first one after a page load, and JS string-coerces
+// undefined + '5' into the literal string "undefined5", corrupting the first barcode scan
+// of every till session.
+let barcode = '';
 let currentSaleItems = [];
 let lastSaleDetails = null;
 

@@ -3,8 +3,13 @@
     const Password = get_localStorage('password');
 
     if ( User && Password ) {
-        document.getElementById('login_div').style.display = 'none';  
+        document.getElementById('login_div').style.display = 'none';
         load_supplier_list(User, Password); /** Do not wait for this to return */
+        // loadWorkshops() (till.js) is only defined on the till page, and its own
+        // DOMContentLoaded call races this same auto-login check on a page that already
+        // has stored credentials — call it again here, same pattern as load_supplier_list,
+        // so a fresh login (below) also populates it, not just a reload with existing creds.
+        if ( typeof loadWorkshops === 'function' ) { loadWorkshops(); }
     }
 
 
@@ -64,6 +69,7 @@ document.getElementById('login_ok_button').addEventListener('click', async funct
             set_localStorage('password', password);
             document.getElementById('login_div').style.display = 'none';
             load_supplier_list(email, password); /** Do not wait for this to return */
+            if ( typeof loadWorkshops === 'function' ) { loadWorkshops(); }
         } else  {
             showToast('Server error: ' + response.status, 'error');  
         }

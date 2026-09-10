@@ -1,4 +1,5 @@
-let stock_take_barcode;
+// Must start as '' not undefined — see till.js's identical fix for why.
+let stock_take_barcode = '';
 let stock_take_interval;
 
 // This listener is for a barcode scanner that acts like a keyboard.
