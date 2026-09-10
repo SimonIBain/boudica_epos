@@ -50,14 +50,16 @@ window.addItemToReceipt = function(description, price, barcode = null, isManualE
 
     // Find an existing item to group with, but only if it's not a manual entry.
     // If isManualEntry is true, we always create a new item.
-    const existingItem = isManualEntry
-        ? null
-        : currentSaleItems.find(
+    const existingIndex = isManualEntry
+        ? -1
+        : currentSaleItems.findIndex(
             item => !item.isRefund && ((barcode && item.barcode === barcode) || (!barcode && item.originalDescription === description))
           );
 
-    if (existingItem) {
-        existingItem.quantity++;
+    let affectedIndex;
+    if (existingIndex !== -1) {
+        currentSaleItems[existingIndex].quantity++;
+        affectedIndex = existingIndex;
     } else {
         const item = {
             description: description,
@@ -68,9 +70,20 @@ window.addItemToReceipt = function(description, price, barcode = null, isManualE
             quantity: 1
         };
         currentSaleItems.push(item);
+        affectedIndex = currentSaleItems.length - 1;
     }
     renderReceipt();
+    flashReceiptItem(affectedIndex);
 };
+
+// Immediate visual "yes, that worked" confirmation on the receipt line an item was just
+// added/incremented into — faster to notice mid-rush than reading a toast message.
+function flashReceiptItem(index) {
+    const li = document.getElementById('receipt-items')?.children[index];
+    if (!li) return;
+    li.classList.add('item-added-flash');
+    li.addEventListener('animationend', () => li.classList.remove('item-added-flash'), { once: true });
+}
 
 function renderReceipt() {
     const receiptItemsList = document.getElementById('receipt-items');
@@ -200,6 +213,35 @@ function clearSale() {
     } else {
         document.getElementById('keypad-display').innerText = '0'; // Fallback
     }
+}
+
+let voidSaleArmTimeout = null;
+
+// Requires a second tap within 3 seconds to actually void the sale — the button reverts to
+// its normal label/appearance if that window passes without a second tap.
+function armOrConfirmVoidSale(btn) {
+    if (voidSaleArmTimeout) {
+        clearTimeout(voidSaleArmTimeout);
+        voidSaleArmTimeout = null;
+        btn.textContent = 'Void Sale';
+        btn.classList.remove('keypad-btn-armed');
+        clearSale();
+        showToast('Sale voided.', 'info');
+        return;
+    }
+
+    if (currentSaleItems.length === 0) {
+        showToast('Nothing to void.', 'info');
+        return;
+    }
+
+    btn.textContent = 'Tap to confirm';
+    btn.classList.add('keypad-btn-armed');
+    voidSaleArmTimeout = setTimeout(() => {
+        voidSaleArmTimeout = null;
+        btn.textContent = 'Void Sale';
+        btn.classList.remove('keypad-btn-armed');
+    }, 3000);
 }
 
 function toggleRefundState(index) {
@@ -634,12 +676,16 @@ document.addEventListener('DOMContentLoaded', async function() {
         const action = target.dataset.action;
         const method = target.dataset.method;
 
-        if (action === 'multiply') { // This is the 'x' button for quantity
+        if (action === 'multiply') { // This is the 'Qty' button for quantity
             setLastItemQuantity(parseFloat(document.getElementById('keypad-display').innerText));
         } else if (action === 'enter') {
             handleManualEntry();
-        } else if (action === 'clear') {
-            clearSale();
+        } else if (action === 'void-sale') {
+            // 'C' only clears the numpad's own display (handled independently by
+            // keypad.js's own listener on this same click) — voiding the whole in-progress
+            // sale is a separate, much higher-stakes action and gets its own control with a
+            // tap-to-arm/tap-to-confirm pattern, so a single mis-tap can't wipe a sale.
+            armOrConfirmVoidSale(target);
         } else if (method) { // This is a payment button
             await handlePayment(method, parseFloat(document.getElementById('keypad-display').innerText));
         } else if (action === 'discount') { // This is the discount button

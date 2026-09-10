@@ -50,11 +50,6 @@ document.addEventListener('DOMContentLoaded', function () {
             updateDisplay();
         }
 
-        if (action === 'period' || action === 'comma') {
-            // This button is now redundant with automatic decimal placement. Do nothing.
-            return;
-        }
-
         if (action === 'backspace') {
             if (rawValue.length > 1) {
                 rawValue = rawValue.slice(0, -1);

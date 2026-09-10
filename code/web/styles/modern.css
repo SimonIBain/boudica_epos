@@ -377,6 +377,23 @@ body {
     font-size: 1em;
 }
 
+/* Deliberately muted/neutral, not red like keypad-btn-clear — voiding the whole sale is a
+   separate, much rarer action from clearing a mistyped number, and shouldn't share that
+   button's "this is dangerous, act on it fast" visual language. It only turns urgent
+   (keypad-btn-armed) once actually armed, mid-confirmation. */
+.keypad-btn-void {
+    background: white;
+    color: #666;
+    border: 2px solid var(--border);
+    font-size: 0.75em;
+}
+
+.keypad-btn-void.keypad-btn-armed {
+    background: var(--danger);
+    color: white;
+    border-color: var(--danger);
+}
+
 .payment-methods {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -392,6 +409,32 @@ body {
     min-height: 40px;
     border: 2px solid transparent;
     font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.payment-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+    filter: brightness(1.05);
+}
+
+.payment-btn:active {
+    transform: translateY(0) scale(0.97);
+    filter: brightness(0.95);
+}
+
+/* Discount/Price Override are rare, deliberate actions — kept visually quieter than
+   Cash/Card so the fast path for a normal sale is the obvious one at a glance. */
+.payment-btn-secondary {
+    background: transparent;
+    border-color: var(--primary-light);
+    color: var(--primary-light);
+}
+
+.payment-btn-secondary:hover {
+    background: var(--primary-light);
+    color: white;
 }
 
 .payment-btn-cash {
@@ -445,6 +488,15 @@ body {
     border-bottom: 1px solid var(--border);
     font-size: 0.95em;
     gap: var(--spacing-md);
+}
+
+@keyframes itemAddedFlash {
+    from { background: var(--accent-light); }
+    to { background: transparent; }
+}
+
+.item-added-flash {
+    animation: itemAddedFlash 0.6s ease-out;
 }
 
 .receipt-item-desc {

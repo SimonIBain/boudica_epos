@@ -148,22 +148,22 @@
                                 <button class="keypad-btn">4</button>
                                 <button class="keypad-btn">5</button>
                                 <button class="keypad-btn">6</button>
-                                <button class="keypad-btn keypad-btn-special" data-action="period">.</button>
+                                <button class="keypad-btn keypad-btn-special keypad-btn-void" data-action="void-sale">Void Sale</button>
                                 <!-- Row 3 -->
                                 <button class="keypad-btn">1</button>
                                 <button class="keypad-btn">2</button>
                                 <button class="keypad-btn">3</button>
-                                <button class="keypad-btn keypad-btn-special keypad-btn-multiply" data-action="multiply">x</button>
+                                <button class="keypad-btn keypad-btn-special keypad-btn-multiply" data-action="multiply" title="Set quantity of the last item added">Qty</button>
                                 <!-- Row 4 -->
-                                <button class="keypad-btn keypad-btn-clear" data-action="clear">C</button>
+                                <button class="keypad-btn keypad-btn-clear" data-action="clear" title="Clear the number on this display">C</button>
                                 <button class="keypad-btn">0</button>
                                 <button class="keypad-btn keypad-btn-enter keypad-btn-wide" id="till-enter-btn" data-action="enter">Enter</button>
                             </div>
                             <div class="payment-methods">
                                 <button class="payment-btn payment-btn-cash" data-method="Cash">💵 Cash</button>
                                 <button class="payment-btn payment-btn-card" data-method="Card">💳 Card</button>
-                                <button class="payment-btn" data-action="discount" style="background-color: var(--primary-light); color: white;">% Discount</button>
-                                <button class="payment-btn" data-action="price-override" style="background-color: var(--primary-light); color: white;">Price Override</button>
+                                <button class="payment-btn payment-btn-secondary" data-action="discount">% Discount</button>
+                                <button class="payment-btn payment-btn-secondary" data-action="price-override">Price Override</button>
                             </div>
                         </div>
                     </div>
