@@ -36,13 +36,25 @@ function extractKeywords(message) {
  * see §12), not a phrase search — a whole customer sentence never matches a
  * product description on its own. Try the full message first, then fall back
  * to individual significant words, merging/deduping by barcode.
+ *
+ * `message` here is often not just the latest question — app.js resends the
+ * *entire chat history* as context on every turn, so this can be a long blob
+ * (a materials-list answer plus several follow-up questions). A relevant word
+ * like "stuffing" can end up far from the front of that text, so every
+ * extracted keyword is tried, not just the first few — in parallel, so a
+ * generous term count doesn't cost real latency (bounded to a sane cap to
+ * avoid firing off an unbounded number of requests on a very long
+ * conversation). Confirmed live: capping at the first 5 terms in document
+ * order missed "stuffing" entirely on a real multi-turn conversation and the
+ * grounding silently did nothing.
  */
 async function findCatalogMatches(message, maxResults) {
-    const terms = [message.trim(), ...extractKeywords(message)].filter(Boolean).slice(0, 5);
+    const terms = [message.trim(), ...extractKeywords(message)].filter(Boolean).slice(0, 30);
+    const results = await Promise.all(
+        terms.map(term => apiCall('getcatalog', { q: term, limit: String(maxResults) }).catch(() => ({})))
+    );
     const seen = new Map();
-    for (const term of terms) {
-        if (seen.size >= maxResults) break;
-        const result = await apiCall('getcatalog', { q: term, limit: String(maxResults) });
+    for (const result of results) {
         if (Array.isArray(result.products)) {
             for (const p of result.products) {
                 if (!seen.has(p.barcode)) { seen.set(p.barcode, p); }
