@@ -2074,11 +2074,11 @@ std::string record_web_store_order(std::string order_id, std::string customer_em
     }
     
     // Calculate VAT (20% UK standard rate)
-    double total = std::stod(total_value);
+    double total = safe_stod(total_value);
     double vat_rate = 0.20;  // 20% VAT
     double vat_amount = total * vat_rate / (1 + vat_rate);  // Back-calculate VAT from total (includes VAT)
     double subtotal = total - vat_amount;
-    
+
     /** Insert order into customer_orders */
     std::string order_date = OmniIndex::Utils::Utils::getCurrentUTCTime();
     std::string sql = "INSERT INTO store.customer_orders "
@@ -2087,6 +2087,12 @@ std::string record_web_store_order(std::string order_id, std::string customer_em
 
     Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
     if ( pgbc._isConnected ) {
+        // customer_orders.email is a foreign key into store.customers — a guest checkout
+        // (no real customer account, per the long-standing customer-auth gap; adduser is
+        // admin-gated and can't be called by the web store's own service account) needs a
+        // minimal row to exist first. No password is set, so this can never be used to log
+        // in — it exists purely to link orders to an email. See CODE_VERIFIED_AUDIT.md §12.
+        pgbc.execParams("INSERT INTO store.customers (email) VALUES ($1) ON CONFLICT (email) DO NOTHING", {customer_email});
         int i_resp = pgbc.execParams(sql, {order_id, customer_email, items_json, total_value, order_date,
             std::to_string(subtotal), std::to_string(vat_amount), std::to_string(vat_rate)});
         std::string warning = pgbc.getWarnings();
@@ -3489,7 +3495,19 @@ int main (int argc, char** argv) {
     }
     else if ( command == "webstoreorder" ) {
         std::string order_id, items_json, total_value, payment_method;
-        std::string customer_email = email_address.empty() ? json_str(jUser, "email") : email_address;
+        // The caller authenticates as the shared web_store_user service account (or its
+        // token) — email_address/jUser's email is THAT account's identity, not the actual
+        // shopper's. A dedicated `email` field carries the real customer address; every
+        // web_store order was previously recorded under the literal string "web_store_user"
+        // (whatever the auth username happened to be) instead, so every customer's order
+        // history query (below) returned everyone else's orders too. See
+        // CODE_VERIFIED_AUDIT.md §12.
+        std::string customer_email;
+        it = queryData.find("email");
+        if ( it != queryData.end() ) { customer_email = url_decode(it->second); }
+        if ( customer_email.empty() ) {
+            customer_email = email_address.empty() ? json_str(jUser, "email") : email_address;
+        }
 
         it = queryData.find("order_id");
         if ( it != queryData.end() ) {
@@ -3523,7 +3541,14 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "orderhistory" ) {
-        std::string customer_email = email_address.empty() ? json_str(jUser, "email") : email_address;
+        // Same fix as webstoreorder above — a dedicated `email` field, not the shared
+        // service account's own auth identity. See CODE_VERIFIED_AUDIT.md §12.
+        std::string customer_email;
+        it = queryData.find("email");
+        if ( it != queryData.end() ) { customer_email = url_decode(it->second); }
+        if ( customer_email.empty() ) {
+            customer_email = email_address.empty() ? json_str(jUser, "email") : email_address;
+        }
 
         if ( customer_email.empty() ) {
             emit_json_error("Customer email not found");
