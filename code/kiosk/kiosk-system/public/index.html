@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Customer Kiosk</title>
+    <!-- Anchor tag styling payload loaded dynamically over local node execution loops -->
+    <style id="compiled-kiosk-styles"></style>
+</head>
+<body>
+
+    <!-- Main entry mount container -->
+    <div id="compiled-kiosk-view"></div>
+
+    <script>
+        // Pull layout schema from central disk allocation profiles immediately
+        fetch('/api/load-layout')
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('compiled-kiosk-view').innerHTML = data.html || '';
+                document.getElementById('compiled-kiosk-styles').innerHTML = data.css || '';
+                
+                // Initialize events to intercept click processing vectors
+                bindCustomerInterfaceEvents();
+            });
+
+        function bindCustomerInterfaceEvents() {
+            // Handle delegation loops to block customers from changing layouts 
+            document.body.addEventListener('click', async function(e) {
+                if (e.target && e.target.classList.contains('chat-submit-btn')) {
+                    const parentContainer = e.target.closest('.ai-box');
+                    const inputField = parentContainer.querySelector('.chat-input');
+                    const conversationLogs = parentContainer.querySelector('.chat-log');
+                    const textContent = inputField.value.trim();
+
+                    if (!textContent) return;
+
+                    // Immediately write local text prompt directly into container view panel
+                    const youLine = document.createElement('div');
+                    youLine.style.marginTop = '10px';
+                    youLine.innerHTML = '<b>You:</b> ';
+                    youLine.appendChild(document.createTextNode(textContent));
+                    conversationLogs.appendChild(youLine);
+                    inputField.value = ''; // Clean prompt interface inputs
+                    conversationLogs.scrollTop = conversationLogs.scrollHeight;
+
+                    // Set identifier mapping coordinates for incoming streaming blocks
+                    const streamingMarkerId = 'chunk-output-' + Date.now();
+                    const aiLine = document.createElement('div');
+                    aiLine.style.marginTop = '10px';
+                    aiLine.innerHTML = '<b>AI:</b> <span><i>Processing network calculations...</i></span>';
+                    const UIOutputSpan = aiLine.querySelector('span');
+                    UIOutputSpan.id = streamingMarkerId;
+                    conversationLogs.appendChild(aiLine);
+                    conversationLogs.scrollTop = conversationLogs.scrollHeight;
+
+                    try {
+                        const localStreamStream = await fetch('/boudica/api/chat', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ prompt: textContent })
+                        });
+
+                        const payloadReader = localStreamStream.body.getReader();
+                        const stringDecoder = new TextDecoder();
+                        let responseProcessingBuffer = '';
+
+                        while (true) {
+                            const { done, value } = await payloadReader.read();
+                            if (done) break;
+
+                            responseProcessingBuffer += stringDecoder.decode(value, { stream: true });
+                            const logPackets = responseProcessingBuffer.split('\n');
+                            responseProcessingBuffer = logPackets.pop(); // Hold onto partial line buffer data
+
+                            for (const stringifiedPacket of logPackets) {
+                                if (!stringifiedPacket.trim()) continue;
+
+                                try {
+                                    const verifiedJson = JSON.parse(stringifiedPacket.trim());
+
+                                    // Catching alternative raw thinking steps to let customers know the engine is working
+                                    if (verifiedJson.type === 'thinking_token') {
+                                        UIOutputSpan.innerHTML = '<i>Searching local knowledge graph...</i>';
+                                    }
+
+                                    // Intercepting Boudica's final structural response block explicitly
+                                    if (verifiedJson.response) {
+                                        UIOutputSpan.innerText = verifiedJson.response.trim();
+                                    }
+                                } catch (innerParsingError) {
+                                    // Protect the streaming loop context from raw fragmented chunk failures
+                                }
+                            }
+                            conversationLogs.scrollTop = conversationLogs.scrollHeight;
+                        }
+
+                    } catch (connectionError) {
+                        UIOutputSpan.innerHTML = '<span style="color:#d9534f;">Connection to sovereign network nodes lost.</span>';
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>

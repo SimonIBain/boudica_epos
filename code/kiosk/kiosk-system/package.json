@@ -1,0 +1,11 @@
+{
+  "name": "boudica-kiosk-manager",
+  "version": "1.0.0",
+  "description": "Sovereign local network responsive layout manager for AI EPOS installations.",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "author": "Store Dev Team",
+  "license": "ISC"
+}

@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  # Service A: The Node.js Web Dashboard & Proxy Interface
+  kiosk-frontend:
+    build:
+      context: ./kiosk-system
+      dockerfile: Dockerfile
+    container_name: boudica-kiosk-ui
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./kiosk-system/public/storage:/usr/src/app/public/storage
+    environment:
+      - NODE_ENV=production
+      # Real Boudica /chat endpoint — this box's own LAN IP, reachable directly
+      # from a container on the same host network (same pattern as the main
+      # boudica_pos backend's BOUDICA_HOST/PORT, see docker-compose.yml at the
+      # project root).
+      - BOUDICA_ENDPOINT=${BOUDICA_ENDPOINT:-http://192.168.0.131/api/boudica/chat}
+      # Required for the customer AI chat box to work at all — no default,
+      # never a real key committed to source. See reference_boudica_slm_inference.
+      - BOUDICA_API_KEY=${BOUDICA_API_KEY:-}
+      # Identifies this deployment to Boudica for RAG-corpus scoping — set to
+      # the shop's own Boudica account, not a developer's personal one.
+      - BOUDICA_USER_ID=${BOUDICA_USER_ID:-boudica-kiosk}
+      - BOUDICA_USER_EMAIL=${BOUDICA_USER_EMAIL:-kiosk@localhost}
+      # Required for the layout editor (admin.html) and publish endpoint —
+      # both stay disabled (503) until this is set. No default, on purpose.
+      - KIOSK_ADMIN_USER=${KIOSK_ADMIN_USER:-admin}
+      - KIOSK_ADMIN_PASSWORD=${KIOSK_ADMIN_PASSWORD:-}
+    restart: unless-stopped

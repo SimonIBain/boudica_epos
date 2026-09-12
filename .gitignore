@@ -9,6 +9,8 @@
 **/build/
 **/*.o
 code/back_end/src/boudica_pos
+**/node_modules/
+code/kiosk/kiosk-system/public/storage/
 
 # Reference-only materials, not part of the shipped source
 github/
