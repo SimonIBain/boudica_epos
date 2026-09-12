@@ -93,7 +93,7 @@ static std::string generate_session_token() {
 
 // ===== BOUDICA AI INTEGRATION =====
 static inline
-std::string call_boudica(std::string message, int max_tokens = 800) {
+std::string call_boudica(std::string message, int max_tokens = 800, std::string session_id = "") {
     // Boudica server config comes from boudica_pos.conf, not getenv() — CGI scripts run
     // under mod_cgid do NOT inherit the server process's arbitrary OS/Docker environment
     // variables (only PassEnv-listed ones would be forwarded, and none are configured
@@ -115,9 +115,43 @@ std::string call_boudica(std::string message, int max_tokens = 800) {
     // reachable shell-injection RCE — the message text was interpolated straight into a
     // shell command string) to a proper libcurl POST via Http::post_json(), and off manual
     // JSON-body API-key embedding to the standard Authorization header.
+    // SECURITY: every call_boudica() caller (getadvice's live storefront chat widget,
+    // plus the internal sales-forecast/reorder prompts below) authenticates with the
+    // one shared boudica_api_key from boudica_pos.conf — there is no per-visitor or
+    // per-session identity here, so on the Boudica side every single request resolves
+    // to the SAME user_id. Boudica's /chat has ~10 natural-language-triggered "personal
+    // memory assistant" features (conversation recall, memory search, recommendations,
+    // usage analytics, reminders, bookmarks, branching, ...) that read back that
+    // user_id's full prompt_audit_log history — fine for a single real person's own
+    // assistant, but with one identity shared across every storefront customer plus
+    // this file's own automated forecast prompts, any visitor whose wording happens to
+    // trip one of those heuristics (e.g. "what's the most valuable item in stock?" ~
+    // matches the usage-analytics trigger) gets shown the shop's ENTIRE combined chat
+    // history back — other customers' questions, audit IDs, and timestamps included.
+    // Confirmed live 2026-09-12: an innocuous stock question returned a full list of
+    // that day's unrelated prior conversations. disable_memory:true suppresses the
+    // recall/search/recommendation paths; it does not need to be conditional on the
+    // caller since none of call_boudica()'s use cases (Q&A advice, forecasting,
+    // reorder prediction) are meant to reference a customer's own chat history anyway.
+    //
+    // session_id is the other half of this fix: with one shared API key, every caller
+    // was also implicitly on Boudica's default session_id ("default" when omitted —
+    // see BOUDICA_API_DEVELOPER_GUIDE.md), so turns from different visitors could be
+    // grouped into the same conversation on Boudica's side regardless of disable_memory.
+    // getadvice's dispatch generates one per browser tab (client-supplied, see
+    // getpublicconfig/getadvice below) and threads it through; the internal
+    // forecast/reorder callers each pass their own fixed, distinct tag instead, since
+    // those aren't tied to a visitor at all. Falls back to a fresh random value here
+    // only if a caller genuinely has nothing to pass, so this never silently drops back
+    // to sharing "default" with everyone else.
+    if ( session_id.empty() ) {
+        session_id = "boudica_pos_" + generate_session_token();
+    }
     nlohmann::json jPayload;
     jPayload["message"] = message;
     jPayload["max_tokens"] = max_tokens;
+    jPayload["disable_memory"] = true;
+    jPayload["session_id"] = session_id;
     std::string payload = jPayload.dump();
 
     std::vector<std::string> headers;
@@ -1959,14 +1993,14 @@ bool add_user(const std::string user, const std::string new_user, const std::str
     return false;
 }
 
-static inline 
-std::string get_advice(std::string prompt) {
+static inline
+std::string get_advice(std::string prompt, std::string session_id = "") {
     prompt += " Please provide a detailed response to the question, and only respond with craft advice. Format as HTML please";
     // Fixed: this used to hand the raw Boudica JSON reply straight back to the caller
     // (getadvice's dispatch then wrapped that whole JSON object inside another
     // "response": "..." string with no escaping — invalid JSON as soon as the AI's answer
     // contained a quote, which is essentially always). Extracts the actual answer text.
-    std::string response = extract_boudica_response_text(call_boudica(prompt));
+    std::string response = extract_boudica_response_text(call_boudica(prompt, 800, session_id));
     OmniIndex::Utils::Utils::trim(response);
     if ( response.length() < 1 ) {
         return "Could not get a response from the AI system.";
@@ -3489,7 +3523,15 @@ int main (int argc, char** argv) {
             emit_json_error("Please provide a prompt for the advice.");
             return 0;
         }
-        std::string response = get_advice(prompt);
+        // Client-supplied, one per browser tab (see js/session.js) — keeps different
+        // visitors' chats on distinct Boudica sessions instead of every caller sharing
+        // the implicit "default" session_id. Optional: call_boudica() generates a real
+        // random one itself if this is left empty, rather than falling back to sharing
+        // "default" with every other caller. See CODE_VERIFIED_AUDIT.md §12.7/§12.8.
+        std::string session_id;
+        it = queryData.find("session_id");
+        if ( it != queryData.end() ) { session_id = url_decode(it->second); }
+        std::string response = get_advice(prompt, session_id);
         emit_json_response(response);
         return 0;
     }
@@ -4019,7 +4061,7 @@ int main (int argc, char** argv) {
                 std::string forecast_prompt = "Based on this sales data in JSON format: " + resp +
                                              ", predict today's sales using statistical analysis and machine learning. "
                                              "Return a JSON object with predicted_sales, confidence_level, and explanation.";
-                std::string boudica_forecast = call_boudica(forecast_prompt);
+                std::string boudica_forecast = call_boudica(forecast_prompt, 800, "boudica_pos_forecast_daily");
 
                 nlohmann::json j;
                 j["daily_sales_data"] = json_parse_or_raw(resp);
@@ -4055,7 +4097,7 @@ int main (int argc, char** argv) {
                 std::string forecast_prompt = "Based on this weekly sales data in JSON format: " + resp +
                                              ", predict this week's sales using statistical analysis and machine learning. "
                                              "Return a JSON object with predicted_sales, confidence_level, trend, and explanation.";
-                std::string boudica_forecast = call_boudica(forecast_prompt);
+                std::string boudica_forecast = call_boudica(forecast_prompt, 800, "boudica_pos_forecast_weekly");
 
                 nlohmann::json j;
                 j["weekly_sales_data"] = json_parse_or_raw(resp);
@@ -4091,7 +4133,7 @@ int main (int argc, char** argv) {
                 std::string forecast_prompt = "Based on this monthly sales data in JSON format: " + resp +
                                              ", predict this month's total sales using statistical analysis and seasonal trends. "
                                              "Return a JSON object with predicted_sales, confidence_level, seasonal_trend, and explanation.";
-                std::string boudica_forecast = call_boudica(forecast_prompt);
+                std::string boudica_forecast = call_boudica(forecast_prompt, 800, "boudica_pos_forecast_monthly");
 
                 nlohmann::json j;
                 j["monthly_sales_data"] = json_parse_or_raw(resp);
@@ -4138,7 +4180,7 @@ int main (int argc, char** argv) {
                                             ", predict when this item needs to be reordered. "
                                             "Consider current stock level, average daily sales velocity, and supplier lead times. "
                                             "Return a JSON object with days_until_reorder, recommended_quantity, priority (urgent/normal/low), and explanation.";
-                std::string boudica_prediction = call_boudica(reorder_prompt);
+                std::string boudica_prediction = call_boudica(reorder_prompt, 800, "boudica_pos_forecast_reorder");
 
                 nlohmann::json j;
                 j["item_data"] = json_parse_or_raw(resp);

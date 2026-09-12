@@ -13,8 +13,13 @@
  * way the kiosk's customer chat is grounded (CODE_VERIFIED_AUDIT.md §11):
  * extract keywords from the question, look up real matches via getcatalog,
  * and prepend them as plain-text context before sending to Boudica.
+ *
+ * Per-tab session_id (§12.8): every visitor used to implicitly share Boudica's
+ * "default" session_id along with the one shared API key — sends this tab's
+ * own generated id (session.js's getChatSessionId()) so different visitors'
+ * chats stay on distinct Boudica sessions.
  */
-import { apiCall } from './session.js';
+import { apiCall, getChatSessionId } from './session.js';
 
 const CHAT_STOPWORDS = new Set([
     'the', 'a', 'an', 'do', 'you', 'have', 'any', 'is', 'are', 'in', 'stock', 'how',
@@ -84,7 +89,7 @@ const EPOS = () => {
         }
 
         try {
-            const data = await apiCall('getadvice', { prompt: augmentedPrompt });
+            const data = await apiCall('getadvice', { prompt: augmentedPrompt, session_id: getChatSessionId() });
             if (data.error) {
                 console.error('Error asking Boudica:', data.error);
                 return 'Sorry, I seem to be having trouble connecting. Please try again later.';

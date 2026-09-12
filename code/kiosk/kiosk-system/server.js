@@ -284,6 +284,9 @@ async function askBoudicaToPickProducts(query, candidates) {
         'and nothing else before or after it. Use an empty items array if nothing fits.'
     );
     form.append('use_rag', 'false');
+    // Explicit field, not just the "No Rag. No Memory." phrase above — belt-and-braces
+    // against the same memory-leak class fixed in §12.7/§12.8.
+    form.append('disable_memory', 'true');
     // Generous budget: the model's chain-of-thought (hidden from the customer, but
     // still counted against max_tokens) can run long when reasoning over a dozen-plus
     // candidates — too low a cap truncates mid-JSON before the final answer even
@@ -405,6 +408,15 @@ app.post('/boudica/api/chat', async (req, res) => {
     // deliberately here — unlike the reporting endpoints (§7.7), this is genuine
     // customer Q&A meant to be grounded in the shop's own RAG corpus (workshops,
     // project guides, etc.), on top of the live stock match above.
+    //
+    // disable_memory: true (§12.7/§12.8) — separate from use_rag/RAG (a knowledge-base
+    // lookup, kept on above), this suppresses Boudica's personal-memory-assistant
+    // features (conversation recall/search/recommendations/bookmarks/analytics). This
+    // kiosk shares one BOUDICA_USER_ID/EMAIL across every customer who walks up to the
+    // terminal — without this, one customer's wording could trip a memory-recall
+    // heuristic and surface a *previous* customer's conversation. Confirmed live for
+    // the web store's equivalent chat (getadvice): an innocuous stock question
+    // returned a list of unrelated prior conversations, IDs and timestamps included.
     const boudicaPayload = {
         message: augmentedMessage,
         session_id: `kiosk_session_${Date.now()}`,
@@ -413,7 +425,8 @@ app.post('/boudica/api/chat', async (req, res) => {
         stream: true,
         temperature: 0.8,
         max_tokens: 4000,
-        use_rag: true
+        use_rag: true,
+        disable_memory: true
     };
 
     try {

@@ -23,6 +23,7 @@ const BACKEND = '/cgi-bin/boudica_pos';
 const SERVICE_USERNAME = 'web_store_user';
 const SERVICE_PASSWORD = 'web_store_pass';
 const TOKEN_KEY = 'web_store_session_token';
+const CHAT_SESSION_ID_KEY = 'web_store_chat_session_id';
 
 let loginPromise = null;
 
@@ -65,6 +66,25 @@ export async function apiCall(command, params = {}) {
         data = await res.json();
     }
     return data;
+}
+
+/**
+ * A stable, per-browser-tab identifier for the Boudica chat (`getadvice`).
+ * `sessionStorage` is naturally scoped per tab (unlike `localStorage`, which is
+ * shared across every tab on the same origin) — generating one value here and
+ * caching it there is what actually gives each visitor's chat its own Boudica
+ * session_id, instead of every caller implicitly sharing Boudica's "default"
+ * one. See CODE_VERIFIED_AUDIT.md §12.7/§12.8 — one shared API key plus one
+ * shared session_id was letting different visitors' conversations bleed into
+ * each other even before the memory/RAG side of that bug.
+ */
+export function getChatSessionId() {
+    let id = sessionStorage.getItem(CHAT_SESSION_ID_KEY);
+    if (!id) {
+        id = 'tab_' + crypto.randomUUID();
+        sessionStorage.setItem(CHAT_SESSION_ID_KEY, id);
+    }
+    return id;
 }
 
 /**
