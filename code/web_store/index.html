@@ -16,6 +16,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+    <!-- Boudica's chat advice is intentionally real HTML (asked to "Format as HTML" —
+         see get_advice() in main.cpp), so it can't just be escaped to plain text without
+         breaking the feature. DOMPurify sanitizes it before it's rendered instead —
+         see CODE_VERIFIED_AUDIT.md §12's stored-XSS finding. -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 </head>
 <body>
     <header>

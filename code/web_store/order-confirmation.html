@@ -207,6 +207,12 @@
     </div>
 
     <script>
+        function escapeHtml(value) {
+            const div = document.createElement('div');
+            div.textContent = value === null || value === undefined ? '' : String(value);
+            return div.innerHTML;
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             const urlParams = new URLSearchParams(window.location.search);
             const orderId = urlParams.get('order_id');
@@ -236,7 +242,7 @@
                             itemsHtml += `
                                 <div class="order-item">
                                     <div class="item-name-qty">
-                                        <strong>${item.name}</strong> (x${item.quantity})
+                                        <strong>${escapeHtml(item.name)}</strong> (x${escapeHtml(item.quantity)})
                                     </div>
                                     <div class="item-price">£${subtotal}</div>
                                 </div>

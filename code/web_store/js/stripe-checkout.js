@@ -2,22 +2,33 @@
  * Stripe Checkout Module
  * Handles payment processing for web store orders
  */
+import { apiCall } from './session.js';
 
-// Initialize Stripe (replace with actual publishable key)
-const STRIPE_PUBLISHABLE_KEY = 'pk_test_51234567890'; // TODO: Set to actual key from config
 let stripe = null;
 let elements = null;
 let cardElement = null;
+let publishableKeyPromise = null;
 
-// Initialize Stripe on page load
-function initializeStripe() {
-    if (!STRIPE_PUBLISHABLE_KEY.startsWith('pk_')) {
+/** Fetches the real Stripe publishable key from the backend (getpublicconfig,
+ * same config-driven pattern the till uses — CODE_VERIFIED_AUDIT.md §7.6),
+ * instead of the hardcoded placeholder this used to ship with. */
+function getPublishableKey() {
+    if (!publishableKeyPromise) {
+        publishableKeyPromise = apiCall('getpublicconfig', {}).then(data => data.stripe_publishable_key || '');
+    }
+    return publishableKeyPromise;
+}
+
+// Initialize Stripe on first use (payment modal open)
+async function initializeStripe() {
+    const publishableKey = await getPublishableKey();
+    if (!publishableKey || !publishableKey.startsWith('pk_')) {
         console.warn('Stripe publishable key not configured');
         return false;
     }
 
     try {
-        stripe = Stripe(STRIPE_PUBLISHABLE_KEY);
+        stripe = Stripe(publishableKey);
         elements = stripe.elements();
         cardElement = elements.create('card', {
             style: {
@@ -235,13 +246,13 @@ export function updatePaymentSummary(subtotal, vat, total) {
 /**
  * Open payment modal
  */
-export function openPaymentModal() {
+export async function openPaymentModal() {
     const modal = document.getElementById('payment-modal');
     modal.style.display = 'flex';
-    
+
     // Initialize Stripe if not already done
     if (!stripe) {
-        initializeStripe();
+        await initializeStripe();
     }
     
     // Pre-fill email if available

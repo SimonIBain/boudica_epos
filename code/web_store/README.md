@@ -53,26 +53,19 @@ web_store/
 ├── order-confirmation.html       # Order confirmation page
 ├── order-history.html           # Customer order history
 ├── receipt.html                 # Digital receipt display
-├── reports.html                 # Customer reports (admin)
-├── cart-management.html         # Advanced cart features
+├── cart-management.html         # Saved carts / wishlist
 ├── sitemap.xml                  # SEO sitemap
 │
-├── js/                          # JavaScript modules
+├── js/                          # JavaScript modules (ES modules throughout)
 │   ├── app.js                   # Homepage logic
 │   ├── cart.js                  # Cart management
-│   ├── epos.js                  # EPOS integration
+│   ├── epos.js                  # Boudica AI advice chat
 │   ├── stripe-checkout.js       # Stripe payment processing
 │   ├── toast.js                 # Notification system
-│   ├── data.js                  # Backend communication
-│   ├── storage.js               # LocalStorage wrapper
-│   ├── users.js                 # User management
-│   └── driver/                  # API drivers
-│       ├── api.js               # API wrapper
-│       ├── boudica.js           # Boudica AI integration
-│       ├── credentials.js       # Credential management
-│       ├── pgbc.js              # Database driver
-│       ├── results.js           # Result processing
-│       └── storage.js           # Persistent storage
+│   ├── data.js                  # Product catalog access (getcatalog)
+│   └── session.js               # Shared session-token auth + escapeHtml helper —
+│                                 # every backend call in this directory goes through
+│                                 # this module. See CODE_VERIFIED_AUDIT.md §12.
 │
 ├── styles/                      # CSS stylesheets
 │   ├── styles.css               # Main stylesheet
@@ -88,83 +81,66 @@ web_store/
 └── .vscode/                     # VS Code settings
 ```
 
+There is no admin reports page in this directory — reporting lives in the till
+(`code/web/`), behind real staff login and role checks. An earlier
+`reports.html` here was a fully public, unauthenticated copy of the same
+reports and has been removed (see CODE_VERIFIED_AUDIT.md §12).
+
 ---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Modern web browser (Chrome, Firefox, Safari, Edge)
-- Access to Boudica POS backend API
-- Stripe account with API keys (for payment processing)
-- Node.js (optional, for local development server)
+- Modern web browser (Chrome, Firefox, Safari, Edge) — this is plain HTML/CSS/ES
+  modules, no build step, no framework (not React, despite an earlier version
+  of this README implying otherwise)
+- The boudica_pos backend + Postgres running and reachable (see the project
+  root's `docker-compose.yml` — `docker compose up -d` from there brings up
+  db + backend + this frontend together)
+- A Stripe account (for payment processing) with `STRIPE_SECRET_KEY`/
+  `STRIPE_PUBLISHABLE_KEY` set on the **backend** (see `getpublicconfig`,
+  below) — nothing to configure in this directory itself
 
-### Installation
+### Running it
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/yourusername/boudica-pos-web-store.git
-   cd boudica-pos-web-store
-   ```
-
-2. **Configure environment variables**
-   Create a `.env` file in the root directory:
-   ```
-   REACT_APP_API_BASE_URL=http://localhost/cgi-bin
-   REACT_APP_STRIPE_KEY=pk_test_xxxxxxxxxxxx
-   REACT_APP_BOUDICA_SERVER=http://localhost/api/boudica
-   ```
-
-3. **Start a local server** (optional)
-   ```bash
-   # Using Python 3
-   python -m http.server 8000
-   
-   # Or using Node.js with http-server
-   npx http-server
-   ```
-
-4. **Open in browser**
-   ```
-   http://localhost:8000
-   ```
+This directory is served as static files by the `frontend` nginx container
+(`docker/frontend/Dockerfile`) at the project root, at `http://localhost:8080/`,
+with `/cgi-bin/` proxied to the real backend so every relative-path API call
+here just works with no CORS setup needed. There is no separate local dev
+server for this directory alone — `js/session.js`'s calls are same-origin
+relative paths (`/cgi-bin/boudica_pos`), which only resolve correctly when
+served through that same nginx origin.
 
 ---
 
 ## ⚙️ Configuration
 
-### Stripe Setup
+Nothing in this directory needs editing for a normal deployment — every
+piece of runtime config lives on the **backend**, not in this static
+frontend, precisely so no server URL or secret has to be hardcoded and
+shipped to every visitor's browser (see the credential-handling note below).
 
-1. **Get API Keys**
-   - Sign up at [Stripe Dashboard](https://dashboard.stripe.com)
-   - Navigate to Developers > API Keys
-   - Copy your publishable key (pk_...)
+### Stripe
 
-2. **Update Configuration**
-   Edit `js/stripe-checkout.js`:
-   ```javascript
-   const STRIPE_PUBLISHABLE_KEY = 'pk_test_your_key_here';
-   ```
+Set `STRIPE_SECRET_KEY`/`STRIPE_PUBLISHABLE_KEY` as backend environment
+variables (`docker-compose.yml` at the project root). `js/stripe-checkout.js`
+fetches the publishable key at runtime via the `getpublicconfig` command —
+there's nothing to hardcode here.
 
-3. **Backend Configuration**
-   Ensure your Boudica POS backend has Stripe secret key configured:
-   ```bash
-   STRIPE_SECRET_KEY=sk_test_your_secret_key
-   ```
+### Backend URL
 
-### Backend API Configuration
+All backend calls go through `js/session.js`, which uses the relative path
+`/cgi-bin/boudica_pos` — same-origin through the `frontend` nginx container,
+which proxies it to the real backend. There's no separate URL to configure;
+deploying this behind a different origin means updating the `nginx.conf`
+proxy target, not anything in this JS.
 
-Update `js/data.js` with your backend URL:
-```javascript
-const PGBC_AGENTS = 'http://your-server/cgi-bin/boudica_pos';
-```
+### Boudica AI
 
-### AI Integration (Boudica)
-
-Configure Boudica AI endpoint in `js/driver/boudica.js`:
-```javascript
-const BOUDICA_API = 'http://your-server/api/boudica';
-const API_KEY = 'your-boudica-api-key';
-```
+The API key lives on the backend (`BOUDICA_API_KEY`, see
+`reference_boudica_slm_inference` in the main project). This frontend never
+sees it — it calls the backend's own `getadvice` command (`js/epos.js`),
+which calls Boudica server-side.
 
 ---
 
@@ -199,17 +175,10 @@ const API_KEY = 'your-boudica-api-key';
 
 ### For Administrators
 
-**Viewing Reports**
-Navigate to `reports.html` for:
-- Sales analysis
-- Revenue metrics
-- Inventory reports
-- Tax summaries
-
-**Order Management**
-- View all orders in Order History
-- Process refunds through Stripe integration
-- Track order status in real-time
+Reporting and admin functions live in the till (`code/web/`), behind real
+staff login and role checks (`salesreport`/`revenuereport`/`taxsummary`
+require an admin account) — not in this public-facing directory. There used
+to be a `reports.html` here with no access control at all; it's been removed.
 
 ---
 
@@ -219,11 +188,13 @@ Navigate to `reports.html` for:
 
 The web store communicates with the Boudica POS backend via these commands:
 
-**Product Data**
+**Product Catalog**
 ```
-GET /cgi-bin/boudica_pos?command=getdetails&barcode=xxx
-GET /cgi-bin/boudica_pos?command=quantitylookup&barcode=xxx
+POST /cgi-bin/boudica_pos  (command=getcatalog, q=search_term, page, limit)
 ```
+Returns only customer-safe fields (description/color/type/price/image_url/
+availability tier) — built for the customer kiosk, shared here. See
+CODE_VERIFIED_AUDIT.md §11.
 
 **Orders**
 ```
@@ -239,12 +210,15 @@ POST /cgi-bin/boudica_pos?command=confirm_payment
 POST /cgi-bin/boudica_pos?command=process_refund
 ```
 
-**AI Integration**
+**AI Advice**
 ```
-POST /api/boudica?prompt=user_question&user_id=xxx
+POST /cgi-bin/boudica_pos  (command=getadvice, prompt=user_question, token=...)
 ```
 
-For complete API documentation, see [API Reference](../../../STRIPE_INTEGRATION_GUIDE.md)
+Every call above is authenticated the same way: a session token obtained
+once per browser session via `command=login` (the shared `web_store_user`
+service account), not a resent username/password on every request. See
+`js/session.js` and CODE_VERIFIED_AUDIT.md §8/§12.
 
 ---
 
@@ -335,16 +309,21 @@ For complete API documentation, see [API Reference](../../../STRIPE_INTEGRATION_
 - Check browser's storage quota
 
 ### Stripe Not Loading
-- Verify API key is set correctly in `stripe-checkout.js`
+- Check the backend has `STRIPE_PUBLISHABLE_KEY` configured (`getpublicconfig`
+  should return a real `pk_...` value, not empty)
 - Check console for errors: F12 > Console tab
 - Ensure Stripe.js is loaded: check Network tab
 - Verify domain is added to Stripe dashboard
 
 ### Backend Connection Issues
-- Check API URL is correct in `js/data.js`
-- Ensure backend server is running
-- Verify CORS headers are set correctly
-- Check network tab for 400/500 errors
+- Confirm this directory is being served through the `frontend` nginx
+  container (not opened as a `file://` page or a bare static server) — the
+  relative `/cgi-bin/boudica_pos` calls in `js/session.js` only resolve
+  correctly same-origin through that proxy
+- Ensure the backend + db containers are healthy (`docker compose ps`)
+- Check the browser console/Network tab for the actual error the backend
+  returned (usually a clear `{"error": "..."}` JSON body, not a generic
+  network failure)
 
 ### Missing Products
 - Verify products exist in backend database

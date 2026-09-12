@@ -335,14 +335,15 @@
             </div>
 
             <div class="modal-actions">
-                <button onclick="closeOrderDetails()">Close</button>
-                <button class="btn-primary" onclick="reorderItems()">Reorder</button>
+                <button id="close-order-details-btn">Close</button>
+                <button class="btn-primary" id="reorder-items-btn">Reorder</button>
             </div>
         </div>
     </div>
 
-    <script>
-        import Toast from './toast.js';
+    <script type="module">
+        import Toast from './js/toast.js';
+        import { apiCall, escapeHtml } from './js/session.js';
         const toast = Toast();
 
         let currentOrderId = null;
@@ -350,7 +351,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             const customerEmail = localStorage.getItem('customerEmail') || '';
-            
+
             if (!customerEmail) {
                 document.getElementById('orders-content').innerHTML = `
                     <div class="error-message">
@@ -367,18 +368,10 @@
 
         async function loadOrderHistory(customerEmail) {
             try {
-                const params = new URLSearchParams({
-                    username: 'web_store_user',
-                    password: 'web_store_pass',
-                    command: 'orderhistory'
-                });
-
-                const response = await fetch(`https://demo.pgbc.ai/cgi-bin/boudica_pos?${params.toString()}`);
-                if (!response.ok) {
-                    throw new Error('Failed to fetch orders');
+                const data = await apiCall('orderhistory', { email: customerEmail });
+                if (data.error) {
+                    throw new Error(data.error);
                 }
-
-                const data = await response.json();
 
                 if (!data.orders || data.orders.length === 0) {
                     document.getElementById('orders-content').innerHTML = `
@@ -398,14 +391,17 @@
                 document.getElementById('orders-content').innerHTML = `
                     <div class="error-message">
                         <strong>Error Loading Orders</strong>
-                        <p>${error.message}</p>
+                        <p>${escapeHtml(error.message)}</p>
                     </div>
                 `;
                 toast.showToast('Error loading order history', 'error');
             }
         }
 
+        let lastLoadedOrders = [];
+
         function renderOrderTable(orders) {
+            lastLoadedOrders = orders;
             let html = `
                 <table class="order-history-table">
                     <thead>
@@ -421,7 +417,7 @@
                     <tbody>
             `;
 
-            orders.forEach(order => {
+            orders.forEach((order, index) => {
                 const date = new Date(order.order_date).toLocaleDateString('en-GB', {
                     year: 'numeric',
                     month: 'short',
@@ -442,15 +438,15 @@
 
                 html += `
                     <tr>
-                        <td><span class="order-id">${order.order_id}</span></td>
-                        <td><span class="order-date">${date}</span></td>
-                        <td>${itemsPreview}</td>
+                        <td><span class="order-id">${escapeHtml(order.order_id)}</span></td>
+                        <td><span class="order-date">${escapeHtml(date)}</span></td>
+                        <td>${escapeHtml(itemsPreview)}</td>
                         <td><span class="order-total">£${parseFloat(order.total_value).toFixed(2)}</span></td>
-                        <td><span class="order-status ${statusClass}">${order.order_status || 'Completed'}</span></td>
+                        <td><span class="order-status ${statusClass}">${escapeHtml(order.order_status || 'Completed')}</span></td>
                         <td>
                             <div class="order-actions">
-                                <button class="btn-small" onclick="viewOrderDetails('${order.order_id}', '${order.items.replace(/'/g, "\\'")}', ${order.total_value}, '${order.order_date}', '${order.order_status}', ${order.subtotal || 'null'}, ${order.vat_amount || 'null'})">Details</button>
-                                <button class="btn-small" onclick="window.location.href='receipt.html?order_id=${encodeURIComponent(order.order_id)}'">Receipt</button>
+                                <button class="btn-small" data-action="view-details" data-order-index="${index}">Details</button>
+                                <button class="btn-small" data-action="view-receipt" data-order-id="${escapeHtml(order.order_id)}">Receipt</button>
                             </div>
                         </td>
                     </tr>
@@ -465,11 +461,32 @@
             document.getElementById('orders-content').innerHTML = html;
         }
 
-        function viewOrderDetails(orderId, itemsJson, total, date, status, subtotal = null, vatAmount = null) {
+        // Delegated listener survives orders-content's innerHTML being replaced on every
+        // render. Uses a data-order-index into lastLoadedOrders instead of embedding order
+        // data (including client-supplied cart JSON, from the public webstoreorder API)
+        // inside an inline onclick string — HTML-entity-escaping alone can't make that
+        // safe, since the browser decodes entities back to the original text before an
+        // inline handler runs. See CODE_VERIFIED_AUDIT.md §12 (same fix as the till's
+        // stock_take.js/order-history.js in §9.1).
+        document.getElementById('orders-content').addEventListener('click', (e) => {
+            const detailsBtn = e.target.closest('[data-action="view-details"]');
+            if (detailsBtn) {
+                const order = lastLoadedOrders[Number(detailsBtn.dataset.orderIndex)];
+                if (order) { viewOrderDetails(order); }
+                return;
+            }
+            const receiptBtn = e.target.closest('[data-action="view-receipt"]');
+            if (receiptBtn) {
+                window.location.href = 'receipt.html?order_id=' + encodeURIComponent(receiptBtn.dataset.orderId);
+            }
+        });
+
+        function viewOrderDetails(order) {
+            const { order_id: orderId, total_value: total, order_date: date, order_status: status, subtotal, vat_amount: vatAmount } = order;
             currentOrderId = orderId;
-            
+
             try {
-                currentOrderItems = JSON.parse(itemsJson);
+                currentOrderItems = JSON.parse(order.items);
             } catch (e) {
                 console.error('Failed to parse items:', e);
                 currentOrderItems = [];
@@ -489,7 +506,7 @@
                     const lineTotal = (parseFloat(item.price) * parseInt(item.quantity)).toFixed(2);
                     itemsHtml += `
                         <div class="order-item-row">
-                            <span>${item.barcode} x${item.quantity}</span>
+                            <span>${escapeHtml(item.barcode)} x${escapeHtml(item.quantity)}</span>
                             <span>£${lineTotal}</span>
                         </div>
                     `;
@@ -513,12 +530,12 @@
             modalBody.innerHTML = `
                 <div class="order-detail-item">
                     <div class="order-detail-label">Order ID</div>
-                    <div class="order-detail-value" style="font-family: 'Courier New', monospace;">${orderId}</div>
+                    <div class="order-detail-value" style="font-family: 'Courier New', monospace;">${escapeHtml(orderId)}</div>
                 </div>
 
                 <div class="order-detail-item">
                     <div class="order-detail-label">Order Date</div>
-                    <div class="order-detail-value">${orderDate}</div>
+                    <div class="order-detail-value">${escapeHtml(orderDate)}</div>
                 </div>
 
                 <div class="order-detail-item">
@@ -544,7 +561,7 @@
                 <div class="order-detail-item">
                     <div class="order-detail-label">Status</div>
                     <div class="order-detail-value">
-                        <span class="order-status status-${(status || 'completed').toLowerCase()}">${status || 'Completed'}</span>
+                        <span class="order-status status-${(status || 'completed').toLowerCase()}">${escapeHtml(status || 'Completed')}</span>
                     </div>
                 </div>
             `;
@@ -598,6 +615,8 @@
         });
 
         document.querySelector('.close-modal').addEventListener('click', closeOrderDetails);
+        document.getElementById('close-order-details-btn').addEventListener('click', closeOrderDetails);
+        document.getElementById('reorder-items-btn').addEventListener('click', reorderItems);
     </script>
 </body>
 </html>

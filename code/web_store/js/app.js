@@ -1,5 +1,6 @@
 import Toast from './toast.js';
 import Data from './data.js';
+import { escapeHtml } from './session.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
     // --- Product Data ---
@@ -44,12 +45,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
         productList.innerHTML = products.map(product => `
-            <div class="product-card" data-id="${product.id}">
-                <img src="${product.image}" alt="${product.name}" class="product-image">
+            <div class="product-card" data-id="${escapeHtml(product.id)}">
+                <img src="${escapeHtml(product.image)}" alt="${escapeHtml(product.name)}" class="product-image">
                 <div class="product-info">
-                    <h3>${product.name}</h3>
+                    <h3>${escapeHtml(product.name)}</h3>
                     <p class="product-price">Starting at £${product.price.toFixed(2)}</p>
-                    <button class="btn view-collection-btn" data-category="${product.searchTerm}" data-category-name="${product.name}">View Collection</button>
+                    <button class="btn view-collection-btn" data-category="${escapeHtml(product.searchTerm)}" data-category-name="${escapeHtml(product.name)}">View Collection</button>
                 </div>
             </div>
         `).join('');
@@ -87,21 +88,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     function renderProductListInModal(container, productArray, emptyMessage) {
         if (productArray.length > 0) {
             container.innerHTML = productArray.map(product => `
-                <div class="product-list-item" data-id="${product.id}">
-                    <img src="${product.image}" alt="${product.name}">
+                <div class="product-list-item" data-id="${escapeHtml(product.id)}">
+                    <img src="${escapeHtml(product.image)}" alt="${escapeHtml(product.name)}">
                     <div class="product-list-item-info">
-                        <h4>${product.name}</h4>
+                        <h4>${escapeHtml(product.name)}</h4>
                         <p><strong>Price:</strong> £${product.price.toFixed(2)}</p>
-                        ${product.quantity < 1
+                        ${product.availability === 'out_of_stock'
                             ? `<p title="All orders will be dispatched within 5 days">Can be Ordered</p>`
-                            : `<p><strong title="Will be shipped the next working day">Available:</strong> ${product.quantity}</p>`
+                            : product.availability === 'low_stock'
+                                ? `<p title="Limited stock remaining"><strong>Low Stock</strong></p>`
+                                : `<p title="Will be shipped the next working day"><strong>In Stock</strong></p>`
                         }
                     </div>
-                    <button class="btn add-to-cart-btn" data-id="${product.id}">Add to cart</button>
+                    <button class="btn add-to-cart-btn" data-id="${escapeHtml(product.id)}">Add to cart</button>
                 </div>
             `).join('');
         } else {
-            container.innerHTML = `<p>${emptyMessage}</p>`;
+            container.innerHTML = `<p>${escapeHtml(emptyMessage)}</p>`;
         }
     }
 
@@ -115,8 +118,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!boudicaChatWindow) return;
         const messageElement = document.createElement('div');
         messageElement.className = `chat-message ${senderClass}`;
-        // Use innerHTML as the response is expected to be formatted HTML from the API
-        messageElement.innerHTML = htmlContent;
+        // Boudica's advice is genuinely meant to be rendered as HTML (get_advice()
+        // explicitly asks the model to "Format as HTML") — DOMPurify strips anything
+        // dangerous (script tags, event handlers, javascript: URLs) while keeping the
+        // real formatting. See CODE_VERIFIED_AUDIT.md §12's stored-XSS finding.
+        messageElement.innerHTML = window.DOMPurify ? DOMPurify.sanitize(htmlContent) : '';
         boudicaChatWindow.appendChild(messageElement);
 
         // Add a print button to Boudica's responses, but not the "thinking" one
@@ -213,7 +219,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!prompt) return;
 
         // Display user's message, wrapping in a <p> tag for consistency
-        appendChatMessage(`<p>${prompt}</p>`, 'user');
+        appendChatMessage(`<p>${escapeHtml(prompt)}</p>`, 'user');
         boudicaChatInput.value = '';
 
         // Display thinking indicator

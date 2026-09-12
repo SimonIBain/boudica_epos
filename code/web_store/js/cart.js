@@ -1,5 +1,6 @@
 import Toast from './toast.js';
 import * as StripeCheckout from './stripe-checkout.js';
+import { apiCall, escapeHtml } from './session.js';
 
 document.addEventListener('DOMContentLoaded', () => {
     const cartList = document.getElementById('cart-list');
@@ -120,22 +121,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 barcode: item.id,
                 quantity: item.quantity.toString()
             }));
-            const itemsJson = JSON.stringify(itemsArray);
-
-            const params = new URLSearchParams({
-                username: 'web_store_user',
-                password: 'web_store_pass',
-                command: 'validatecart',
-                items: itemsJson
-            });
-
-            const response = await fetch(`https://demo.pgbc.ai/cgi-bin/boudica_pos?${params.toString()}`);
-            if (!response.ok) {
-                console.error('Validation failed:', response.status);
+            const data = await apiCall('validatecart', { items: JSON.stringify(itemsArray) });
+            if (data.error) {
+                console.error('Validation failed:', data.error);
                 return { valid: false, items: [] };
             }
-
-            const data = await response.json();
             return data;
         } catch (error) {
             console.error('Error validating cart:', error);
@@ -168,21 +158,21 @@ document.addEventListener('DOMContentLoaded', () => {
             if (buyNowBtn) buyNowBtn.style.display = 'inline-block';
             if (clearCartBtn) clearCartBtn.style.display = 'inline-block';
             cartList.innerHTML = cart.map(item => `
-                <div class="cart-item" data-id="${item.id}">
-                    <img src="${item.image}" alt="${item.name}">
+                <div class="cart-item" data-id="${escapeHtml(item.id)}">
+                    <img src="${escapeHtml(item.image)}" alt="${escapeHtml(item.name)}">
                     <div class="cart-item-details">
-                        <h3>${item.name}</h3>
+                        <h3>${escapeHtml(item.name)}</h3>
                         <p class="product-price">£${item.price.toFixed(2)} each</p>
                     </div>
                     <div class="cart-item-quantity">
-                        <button class="quantity-btn decrease-quantity" data-id="${item.id}">-</button>
-                        <input type="number" class="quantity-input" value="${item.quantity}" min="1" data-id="${item.id}" readonly>
-                        <button class="quantity-btn increase-quantity" data-id="${item.id}">+</button>
+                        <button class="quantity-btn decrease-quantity" data-id="${escapeHtml(item.id)}">-</button>
+                        <input type="number" class="quantity-input" value="${item.quantity}" min="1" data-id="${escapeHtml(item.id)}" readonly>
+                        <button class="quantity-btn increase-quantity" data-id="${escapeHtml(item.id)}">+</button>
                     </div>
                     <div class="cart-item-subtotal">
                         <p>£${(item.price * item.quantity).toFixed(2)}</p>
                     </div>
-                    <button class="cart-item-remove" data-id="${item.id}">Remove</button>
+                    <button class="cart-item-remove" data-id="${escapeHtml(item.id)}">Remove</button>
                 </div>
             `).join('');
         }
@@ -290,24 +280,18 @@ We've sent this confirmation to ${email}.
                 price: item.price.toString(),
                 quantity: item.quantity.toString()
             }));
-            const itemsJson = JSON.stringify(itemsArray);
 
-            const params = new URLSearchParams({
-                username: 'web_store_user',
-                password: 'web_store_pass',
-                command: 'webstoreorder',
+            // `email` is the real customer address — distinct from the shared service
+            // account this page authenticates as. See CODE_VERIFIED_AUDIT.md §12: every
+            // web-store order used to be recorded under the literal string
+            // "web_store_user" instead, and every customer's order history returned
+            // everyone else's orders too.
+            const data = await apiCall('webstoreorder', {
                 order_id: orderId,
-                items: itemsJson,
-                total: total.toFixed(2)
+                items: JSON.stringify(itemsArray),
+                total: total.toFixed(2),
+                email: customerEmail
             });
-
-            const response = await fetch(`https://demo.pgbc.ai/cgi-bin/boudica_pos?${params.toString()}`);
-            if (!response.ok) {
-                console.error('Order submission failed:', response.status);
-                return { success: false, error: 'Failed to record order' };
-            }
-
-            const data = await response.json();
             if (data.response) {
                 return { success: true, order_id: data.order_id };
             } else {
@@ -341,8 +325,8 @@ We've sent this confirmation to ${email}.
 
     // --- Payment Modal and Stripe Integration ---
 
-    function openPaymentModal() {
-        StripeCheckout.openPaymentModal();
+    async function openPaymentModal() {
+        await StripeCheckout.openPaymentModal();
     }
 
     function closePaymentModal() {
@@ -411,7 +395,7 @@ We've sent this confirmation to ${email}.
 
         // Open payment modal
         toast.showToast('Opening payment form...', 'info');
-        openPaymentModal();
+        await openPaymentModal();
     });
 
     // Save current cart with a name
@@ -459,10 +443,10 @@ We've sent this confirmation to ${email}.
             html += `
                 <div class="saved-cart-item">
                     <div class="cart-info">
-                        <strong>${name}</strong>
+                        <strong>${escapeHtml(name)}</strong>
                         <span class="cart-meta">${cartData.itemCount} items • £${cartData.total.toFixed(2)}</span>
                     </div>
-                    <button class="btn-mini" onclick="window.location.reload()" data-action="load-cart" data-name="${name}">Load</button>
+                    <button class="btn-mini" data-action="load-cart" data-name="${escapeHtml(name)}">Load</button>
                 </div>
             `;
         });

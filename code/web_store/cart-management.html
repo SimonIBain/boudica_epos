@@ -296,8 +296,9 @@
         </div>
     </div>
 
-    <script>
-        import Toast from './toast.js';
+    <script type="module">
+        import Toast from './js/toast.js';
+        import { escapeHtml } from './js/session.js';
         const toast = Toast();
 
         // Tab switching
@@ -409,13 +410,13 @@
                 html += `
                     <div class="cart-card">
                         <div class="cart-info">
-                            <div class="cart-name">${name}</div>
+                            <div class="cart-name">${escapeHtml(name)}</div>
                             <span class="cart-meta">${cartData.itemCount} items • Saved ${new Date(cartData.created).toLocaleDateString()}</span>
                         </div>
                         <div class="cart-total">£${cartData.total.toFixed(2)}</div>
                         <div class="cart-actions">
-                            <button class="btn-action" onclick="loadSavedCart('${name}')">Load</button>
-                            <button class="btn-action btn-danger" onclick="deleteSavedCart('${name}')">Delete</button>
+                            <button class="btn-action" data-action="load-cart" data-name="${escapeHtml(name)}">Load</button>
+                            <button class="btn-action btn-danger" data-action="delete-cart" data-name="${escapeHtml(name)}">Delete</button>
                         </div>
                     </div>
                 `;
@@ -444,13 +445,13 @@
                 html += `
                     <div class="wishlist-item">
                         <div class="wishlist-image">
-                            <img src="${item.image}" alt="${item.name}" style="width: 100%; height: 100%; object-fit: cover;">
+                            <img src="${escapeHtml(item.image)}" alt="${escapeHtml(item.name)}" style="width: 100%; height: 100%; object-fit: cover;">
                         </div>
-                        <div class="wishlist-name">${item.name}</div>
+                        <div class="wishlist-name">${escapeHtml(item.name)}</div>
                         <div class="wishlist-price">£${item.price.toFixed(2)}</div>
                         <div class="wishlist-actions">
-                            <button onclick="addWishlistToCart('${item.id}')">Add to Cart</button>
-                            <button class="btn-danger" onclick="removeFromWishlist('${item.id}')">Remove</button>
+                            <button data-action="add-to-cart" data-id="${escapeHtml(item.id)}">Add to Cart</button>
+                            <button class="btn-danger" data-action="remove-wishlist" data-id="${escapeHtml(item.id)}">Remove</button>
                         </div>
                     </div>
                 `;
@@ -471,11 +472,24 @@
             renderWishlist();
         });
 
-        // Make functions global
-        window.loadSavedCart = loadSavedCart;
-        window.deleteSavedCart = deleteSavedCart;
-        window.addWishlistToCart = addWishlistToCart;
-        window.removeFromWishlist = removeFromWishlist;
+        // Delegated listeners instead of inline onclick="...('${name}')" — the saved-cart
+        // name is user-typed (cart.js's save-cart form) and the embedded-in-a-JS-string
+        // pattern isn't safe even with HTML-entity escaping (the browser decodes entities
+        // back to the original text before an inline handler runs). See
+        // CODE_VERIFIED_AUDIT.md §12 (same fix as the till's stock_take.js in §9.1).
+        document.getElementById('saved-carts-container').addEventListener('click', (e) => {
+            const loadBtn = e.target.closest('[data-action="load-cart"]');
+            if (loadBtn) { loadSavedCart(loadBtn.dataset.name); return; }
+            const deleteBtn = e.target.closest('[data-action="delete-cart"]');
+            if (deleteBtn) { deleteSavedCart(deleteBtn.dataset.name); }
+        });
+
+        document.getElementById('wishlist-container').addEventListener('click', (e) => {
+            const addBtn = e.target.closest('[data-action="add-to-cart"]');
+            if (addBtn) { addWishlistToCart(addBtn.dataset.id); return; }
+            const removeBtn = e.target.closest('[data-action="remove-wishlist"]');
+            if (removeBtn) { removeFromWishlist(removeBtn.dataset.id); }
+        });
     </script>
 </body>
 </html>

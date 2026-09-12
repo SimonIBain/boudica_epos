@@ -358,8 +358,9 @@
         </div>
     </div>
 
-    <script>
-        import Toast from './toast.js';
+    <script type="module">
+        import Toast from './js/toast.js';
+        import { apiCall, escapeHtml } from './js/session.js';
         const toast = Toast();
 
         document.addEventListener('DOMContentLoaded', loadReceipt);
@@ -369,23 +370,17 @@
             const orderId = urlParams.get('order_id');
 
             if (!orderId) {
-                document.getElementById('receipt-content').innerHTML = 
+                document.getElementById('receipt-content').innerHTML =
                     '<div class="error-message">No order ID provided. Please select an order from your order history.</div>';
                 return;
             }
 
             try {
-                const response = await fetch(
-                    `/cgi-bin/boudica_pos?username=web_store_user&password=web_store_pass&command=getreceipt&order_id=${encodeURIComponent(orderId)}`
-                );
-                
-                if (!response.ok) throw new Error('Failed to fetch receipt');
-
-                const data = await response.json();
+                const data = await apiCall('getreceipt', { order_id: orderId });
 
                 if (data.error) {
-                    document.getElementById('receipt-content').innerHTML = 
-                        `<div class="error-message">${data.error}</div>`;
+                    document.getElementById('receipt-content').innerHTML =
+                        `<div class="error-message">${escapeHtml(data.error)}</div>`;
                     return;
                 }
 
@@ -393,7 +388,7 @@
             } catch (error) {
                 console.error('Error loading receipt:', error);
                 toast.showToast('Failed to load receipt', 'error');
-                document.getElementById('receipt-content').innerHTML = 
+                document.getElementById('receipt-content').innerHTML =
                     '<div class="error-message">Failed to load receipt. Please try again.</div>';
             }
         }
@@ -422,15 +417,15 @@
                     <div class="receipt-meta">
                         <div class="meta-group">
                             <h4>Order Details</h4>
-                            <p><strong>Order ID:</strong> ${receipt.order_id}</p>
-                            <p><strong>Date:</strong> ${dateStr}</p>
-                            <p><strong>Time:</strong> ${timeStr}</p>
-                            <p><strong>Payment:</strong> ${receipt.payment_method}</p>
+                            <p><strong>Order ID:</strong> ${escapeHtml(receipt.order_id)}</p>
+                            <p><strong>Date:</strong> ${escapeHtml(dateStr)}</p>
+                            <p><strong>Time:</strong> ${escapeHtml(timeStr)}</p>
+                            <p><strong>Payment:</strong> ${escapeHtml(receipt.payment_method)}</p>
                         </div>
                         <div class="meta-group">
                             <h4>Status</h4>
-                            <p><strong>Order Status:</strong> <span class="status-badge ${receipt.order_status?.toLowerCase() === 'completed' ? 'completed' : 'pending'}">${receipt.order_status || 'Processing'}</span></p>
-                            <p><strong>Customer:</strong> ${receipt.customer_email}</p>
+                            <p><strong>Order Status:</strong> <span class="status-badge ${receipt.order_status?.toLowerCase() === 'completed' ? 'completed' : 'pending'}">${escapeHtml(receipt.order_status || 'Processing')}</span></p>
+                            <p><strong>Customer:</strong> ${escapeHtml(receipt.customer_email)}</p>
                         </div>
                     </div>
 
@@ -452,8 +447,8 @@
                 receipt.items.forEach(item => {
                     html += `
                         <tr>
-                            <td class="item-description">${item.description}</td>
-                            <td class="item-qty">${item.quantity}</td>
+                            <td class="item-description">${escapeHtml(item.description)}</td>
+                            <td class="item-qty">${escapeHtml(item.quantity)}</td>
                             <td class="item-price">£${parseFloat(item.unit_price || 0).toFixed(2)}</td>
                             <td class="item-price">£${parseFloat(item.line_total || 0).toFixed(2)}</td>
                         </tr>
@@ -487,8 +482,8 @@
                         </div>
 
                         <div class="payment-info">
-                            <p>Payment Method: <strong>${receipt.payment_method}</strong></p>
-                            <p>Order contains <strong>${receipt.item_count}</strong> item${receipt.item_count !== 1 ? 's' : ''}</p>
+                            <p>Payment Method: <strong>${escapeHtml(receipt.payment_method)}</strong></p>
+                            <p>Order contains <strong>${escapeHtml(receipt.item_count)}</strong> item${receipt.item_count !== 1 ? 's' : ''}</p>
                         </div>
                     </div>
 
@@ -498,7 +493,7 @@
 
                     <div class="receipt-footer">
                         <p>This is your official receipt. Please keep it for your records.</p>
-                        <p>Order #${receipt.order_id} | Generated on ${new Date().toLocaleString('en-GB')}</p>
+                        <p>Order #${escapeHtml(receipt.order_id)} | Generated on ${new Date().toLocaleString('en-GB')}</p>
                     </div>
                 </div>
             `;
