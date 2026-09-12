@@ -11,8 +11,25 @@ set -euo pipefail
 : "${BOUDICA_HOST:=localhost}"
 : "${BOUDICA_PORT:=80}"
 : "${BOUDICA_API_KEY:=}"
+# Comma-separated exact origins (scheme+host+port, e.g. https://shop.example.com) allowed
+# to make cross-origin calls to this backend — reflected back in Access-Control-Allow-Origin
+# instead of a bare wildcard (CODE_VERIFIED_AUDIT.md §3.8/§5/§6.2). Empty by default: the
+# till and web store both reach the backend same-origin through this compose stack's own
+# nginx proxy, so no CORS header is even consulted locally. A production deployment where
+# the public web store is tunneled back to this backend needs its real origin listed here.
+: "${ALLOWED_ORIGINS:=}"
+# Empty defaults here (main.cpp's getpublicconfig falls back to the same
+# http://localhost:8001/... default this always hardcoded, and "Boudica POS") — set these
+# for a real deployment instead of leaving the till showing generic/local placeholder
+# branding and a printer URL that only works if the Star WebPRNT service happens to be on
+# the same machine as the browser (CODE_VERIFIED_AUDIT.md §10; was previously hardcoded in
+# code/web/scripts/printer.js as "Curiosity Cabin"/thecuriositycabins.com, a leftover from
+# a specific prior deployment).
+: "${STAR_PRINTER_URL:=}"
+: "${STORE_NAME:=}"
+: "${STORE_WEBSITE:=}"
 
-export DB_HOST DB_PORT STORE_DB_PASSWORD ADMIN_USERNAME ADMIN_PASSWORD STRIPE_SECRET_KEY STRIPE_PUBLISHABLE_KEY BOUDICA_HOST BOUDICA_PORT BOUDICA_API_KEY
+export DB_HOST DB_PORT STORE_DB_PASSWORD ADMIN_USERNAME ADMIN_PASSWORD STRIPE_SECRET_KEY STRIPE_PUBLISHABLE_KEY BOUDICA_HOST BOUDICA_PORT BOUDICA_API_KEY ALLOWED_ORIGINS STAR_PRINTER_URL STORE_NAME STORE_WEBSITE
 
 echo "Waiting for postgres at ${DB_HOST}:${DB_PORT}..."
 for i in $(seq 1 60); do

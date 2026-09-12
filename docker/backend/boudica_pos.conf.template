@@ -20,3 +20,7 @@ stripe_publishable_key ${STRIPE_PUBLISHABLE_KEY}
 boudica_host ${BOUDICA_HOST}
 boudica_port ${BOUDICA_PORT}
 boudica_api_key ${BOUDICA_API_KEY}
+allowed_origins ${ALLOWED_ORIGINS}
+star_printer_url ${STAR_PRINTER_URL}
+store_name ${STORE_NAME}
+store_website ${STORE_WEBSITE}

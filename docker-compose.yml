@@ -39,6 +39,17 @@ services:
       BOUDICA_HOST: ${BOUDICA_HOST:-192.168.0.131}
       BOUDICA_PORT: ${BOUDICA_PORT:-80}
       BOUDICA_API_KEY: ${BOUDICA_API_KEY:-}
+      # Set to the real public web store origin(s) (comma-separated, exact scheme+host+port)
+      # once it's tunneled back to this backend from outside this compose stack — empty
+      # here because local till/web-store calls are same-origin via the frontend's nginx
+      # proxy and never need a CORS header at all. See entrypoint.sh.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      # Fresh-install branding/printer defaults — override for a real deployment instead of
+      # leaving the generic "Boudica POS" name or a printer URL that only works with the
+      # Star WebPRNT service on the same machine as the browser.
+      STAR_PRINTER_URL: ${STAR_PRINTER_URL:-}
+      STORE_NAME: ${STORE_NAME:-}
+      STORE_WEBSITE: ${STORE_WEBSITE:-}
     healthcheck:
       # Every command now requires real credentials (the old no-credentials-needed
       # fallback was a security bug, removed — see CODE_VERIFIED_AUDIT.md) so this uses the

@@ -320,6 +320,23 @@ CREATE INDEX idx_users_username ON store.users(username);
 CREATE INDEX idx_users_email ON store.users(email);
 CREATE INDEX idx_users_role ON store.users(role);
 
+-- Session tokens issued by `login`, so callers stop resending username+password on every
+-- request (CODE_VERIFIED_AUDIT.md §3.6/§5/§6.2). A row is valid while revoked_at is NULL
+-- and expires_at is in the future; check_session_token() (main.cpp) slides expires_at
+-- forward on each use.
+CREATE TABLE store.sessions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES store.users(id) ON DELETE CASCADE,
+    token TEXT UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    revoked_at TIMESTAMP
+);
+
+CREATE INDEX idx_sessions_token ON store.sessions(token);
+CREATE INDEX idx_sessions_user_id ON store.sessions(user_id);
+
 -- ===== LOGGING & AUDIT =====
 CREATE TABLE store.logs (
     id SERIAL PRIMARY KEY,

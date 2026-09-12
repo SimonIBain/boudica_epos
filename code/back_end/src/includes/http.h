@@ -10,11 +10,17 @@ namespace OmniIndex
     {
     public:
         /**!This method will translate the IP address to a geo specific region, using the
-         * service frm RapidAPI
+         * service frm RapidAPI. Not currently called from anywhere in main.cpp (dead
+         * code) — kept rather than deleted since it's a plausible future feature, but
+         * fixed rather than left with a live leaked credential in source: the key is now
+         * a required parameter instead of hardcoded (CODE_VERIFIED_AUDIT.md's TLS/API-key
+         * finding). A caller should source it the same way every other secret in this
+         * codebase does — get_configuration() — not getenv() or a literal.
          * @param std::string holding the IP address
+         * @param std::string the RapidAPI key for telize-v1.p.rapidapi.com
          * @return std::string
          */
-        static std::string get_geo(std::string);
+        static std::string get_geo(std::string ip, std::string rapidapi_key);
 
         /** This method will download a file and stoe it to teh tmp folder prior to opening it
          * @param std::sting - url

@@ -37,7 +37,7 @@ size_t Http::write_data(void *ptr, size_t size, size_t nmemb, FILE *stream)
     return written;
 }
 
-std::string Http::get_geo(std::string ip)
+std::string Http::get_geo(std::string ip, std::string rapidapi_key)
 {
     CURL *curl;
     CURLcode res;
@@ -52,11 +52,22 @@ std::string Http::get_geo(std::string ip)
         curl_easy_setopt(curl, CURLOPT_URL, curl_url.c_str());
         struct curl_slist *headers = NULL;
         headers = curl_slist_append(headers, "x-rapidapi-host: telize-v1.p.rapidapi.com");
-        headers = curl_slist_append(headers, "x-rapidapi-key: 0ca2e3b379mshf6359879c667801p1d06f3jsn6bea675d47bf");
+        // Fixed: this was a hardcoded, live RapidAPI key committed to a public repo.
+        // Caller now supplies it (get_configuration(), same pattern as every other
+        // secret in this codebase) instead of it being a literal here.
+        std::string key_header = "x-rapidapi-key: " + rapidapi_key;
+        headers = curl_slist_append(headers, key_header.c_str());
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // only for https
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L); // only for https
+        // Fixed: TLS certificate/hostname verification was disabled outright here — a
+        // man-in-the-middle on this outbound call could impersonate the RapidAPI
+        // endpoint and both read the request (leaking the key above) and return
+        // forged geo data. libcurl's defaults (verify both) are what every other
+        // HTTPS call in this codebase (post_json/post_multipart_with_file) already
+        // relies on implicitly; made explicit here since this function had previously
+        // gone out of its way to turn verification off.
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, payload_source);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &geo_data);
 #ifdef _DEBUG1
@@ -119,8 +130,10 @@ std::string Http::request(std::string url)
         std::string curl_url = url;
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
         curl_easy_setopt(curl, CURLOPT_URL, curl_url.c_str());
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // only for https
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L); // only for https
+        // Fixed: TLS verification was disabled outright — see the identical fix and
+        // rationale in get_geo() above.
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, payload_source);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 #ifdef _DEBUG1

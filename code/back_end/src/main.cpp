@@ -23,6 +23,7 @@
 #include <regex>
 #include <cmath>
 #include <cctype>
+#include <sstream>
 
 #include "includes/cryptography.h"
 #include "includes/environment.h"
@@ -34,6 +35,7 @@
 #include "includes/logging.h"
 #include "includes/stripe.h"
 #include "includes/authentication.h"
+#include <openssl/rand.h>
 
 // Constants for file upload
 const int MAX_FILE_SIZE = 1000 * 1024 * 1024; // 10MB max file size
@@ -67,6 +69,26 @@ static inline void emit_json_error(const std::string& message) {
     nlohmann::json j;
     j["error"] = message;
     std::cout << j.dump() << "\n\n";
+}
+
+// Session tokens (replacing resend-username-and-password-on-every-call): a 32-byte value
+// from OpenSSL's CSPRNG, hex-encoded. Not derived from time/rand() (see Crypto::string_create_id,
+// which is seeded from the current second and unsuitable for anything that must be
+// unguessable) since a predictable token defeats the whole point of not resending a
+// password on every request.
+static std::string generate_session_token() {
+    unsigned char buf[32];
+    if (RAND_bytes(buf, sizeof(buf)) != 1) {
+        throw std::runtime_error("Unable to generate a secure session token");
+    }
+    static const char hex_chars[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(sizeof(buf) * 2);
+    for (unsigned char b : buf) {
+        out += hex_chars[b >> 4];
+        out += hex_chars[b & 0x0F];
+    }
+    return out;
 }
 
 // ===== BOUDICA AI INTEGRATION =====
@@ -468,6 +490,50 @@ std::map<std::string, std::string> get_configuration() {
         OmniIndex::Utils::Utils::trim(tmp);
         configuration["boudica_api_key"]= tmp;
     }
+    tmp = conf;
+    sz_pos = tmp.find("\nallowed_origins ");
+    if ( sz_pos != std::string::npos ) {
+        tmp.erase(0, sz_pos + 17);
+        sz_pos = tmp.find("\n");
+        if ( sz_pos != std::string::npos ) {
+            tmp.erase ( sz_pos );
+        }
+        OmniIndex::Utils::Utils::trim(tmp);
+        configuration["allowed_origins"]= tmp;
+    }
+    tmp = conf;
+    sz_pos = tmp.find("\nstar_printer_url ");
+    if ( sz_pos != std::string::npos ) {
+        tmp.erase(0, sz_pos + 18);
+        sz_pos = tmp.find("\n");
+        if ( sz_pos != std::string::npos ) {
+            tmp.erase ( sz_pos );
+        }
+        OmniIndex::Utils::Utils::trim(tmp);
+        configuration["star_printer_url"]= tmp;
+    }
+    tmp = conf;
+    sz_pos = tmp.find("\nstore_name ");
+    if ( sz_pos != std::string::npos ) {
+        tmp.erase(0, sz_pos + 12);
+        sz_pos = tmp.find("\n");
+        if ( sz_pos != std::string::npos ) {
+            tmp.erase ( sz_pos );
+        }
+        OmniIndex::Utils::Utils::trim(tmp);
+        configuration["store_name"]= tmp;
+    }
+    tmp = conf;
+    sz_pos = tmp.find("\nstore_website ");
+    if ( sz_pos != std::string::npos ) {
+        tmp.erase(0, sz_pos + 15);
+        sz_pos = tmp.find("\n");
+        if ( sz_pos != std::string::npos ) {
+            tmp.erase ( sz_pos );
+        }
+        OmniIndex::Utils::Utils::trim(tmp);
+        configuration["store_website"]= tmp;
+    }
     return configuration;
 }
 
@@ -643,17 +709,65 @@ std::string check_user_credentials(std::string email_address, std::string passwo
     }
 }
 
-// Gates the small set of commands that shouldn't be reachable by every logged-in till
-// user (financial reports, structural writes like adding products/suppliers/users,
-// refunds). `jUser` is the row already fetched by check_user_credentials() moments
-// earlier in the same request — no extra DB round trip needed. Every other command the
-// till actually uses (selling, stock adjustments, cashup, dashboards, lookups, forecasts)
-// stays reachable by any active user, matching how the seeded admin/operator accounts are
-// used today.
+// Same response shape as check_user_credentials() (a `login` result), but authenticates a
+// session token from `store.sessions` instead of a resent username/password — the "real
+// API-key/token layer" flagged in CODE_VERIFIED_AUDIT.md §5/§6.2. On success, slides the
+// session's expiry forward from now so an actively-used till stays logged in through a
+// whole shift; an abandoned token still dies at its last-refreshed 12-hour mark.
+static inline
+std::string check_session_token(std::string token) {
+    std::map<std::string, std::string> conf = get_configuration();
+    Postgresql pgbc = Postgresql(conf["username"], conf["password"], conf["server"], conf["port"], "postgres");
+    nlohmann::json out;
+    if ( pgbc._isConnected ) {
+        std::string sql = "SELECT u.id, u.username, u.email, u.role, u.full_name, u.is_active "
+                         "FROM store.sessions s JOIN store.users u ON u.id = s.user_id "
+                         "WHERE s.token = $1 AND s.revoked_at IS NULL "
+                         "AND s.expires_at > CURRENT_TIMESTAMP AND u.is_active = true";
+        std::string resp(pgbc.runCommandParams(sql, {token}));
+        std::string error = pgbc.getLastError();
+        nlohmann::json row = json_row(resp);
+        if ( error == "" && !json_str(row, "id").empty() ) {
+            pgbc.execParams(
+                "UPDATE store.sessions SET last_seen_at = CURRENT_TIMESTAMP, "
+                "expires_at = CURRENT_TIMESTAMP + INTERVAL '12 hours' WHERE token = $1",
+                {token});
+            out["response"] = nlohmann::json::array({row});
+            out["warnings"] = "";
+            out["errors"] = "";
+        } else {
+            out["response"] = nlohmann::json::array();
+            out["warnings"] = "";
+            out["errors"] = "Invalid or expired session token";
+        }
+        pgbc.close();
+        return out.dump();
+    } else {
+        out["response"] = nlohmann::json::array();
+        out["error"] = "PGBC connection failed";
+        return out.dump();
+    }
+}
+
+// Gates catalog/supplier/refund commands (manager or admin). `jUser` is the row already
+// fetched by check_user_credentials()/check_session_token() moments earlier in the same
+// request — no extra DB round trip needed. Every other command the till actually uses
+// (selling, stock adjustments, cashup, dashboards, lookups, forecasts, inventoryreport)
+// stays reachable by any active user.
 static inline
 bool user_is_privileged(const nlohmann::json& jUser) {
     std::string role = json_str(jUser, "role");
     return role == "admin" || role == "manager";
+}
+
+// Gates the genuinely sensitive commands (real revenue/margin/VAT figures, staff account
+// creation) — a step up from user_is_privileged(): a manager can run the shop day-to-day
+// (catalog, suppliers, refunds) without seeing figures the audit flagged as more
+// confidential than routine operations, per CODE_VERIFIED_AUDIT.md §8's RBAC pass (the
+// user's own choice of where the admin/manager line falls, not an inferred default).
+static inline
+bool user_is_admin(const nlohmann::json& jUser) {
+    return json_str(jUser, "role") == "admin";
 }
 
 static inline
@@ -2416,13 +2530,51 @@ std::string get_receipt(std::string order_id, const std::string user, const std:
 }
 
 int main (int argc, char** argv) {
-    /* Set the return headers in place */
-    std::cout << "Access-Control-Allow-Origin: *\r\n";
-    std::cout << "Access-Control-Allow-Headers: *\r\n";
-    std::cout << "Access-Control-Allow-Credentials: true\r\n";
-    std::cout << "Access-Control-Allow-Methods: *\r\n";
-    std::cout << "Content-Type: application/json\r\n\r\n";
     std::map<std::string, std::string> m_configuration = get_configuration();
+    // Built here (not just inside the #else/non-DEBUG branch further down) so it's
+    // available for the CORS Origin check below regardless of build mode; harmless in a
+    // DEBUG/CLI run, where HTTP_ORIGIN/REQUEST_METHOD simply come back empty.
+    Environment <std::string, std::string> environment;
+
+    // CORS: reflect a request's Origin header only if it's in the deployment's configured
+    // allowlist — never a bare wildcard. This backend is reached both by the LAN till
+    // (same-origin through the local nginx proxy, so no CORS header is even consulted
+    // there) and, over a tunnel, by the public web store on its own origin; a wildcard
+    // combined with the credentials-as-parameters auth model meant anyone who could see a
+    // response (e.g. via a malicious page in a till operator's browser) could read it.
+    // See CODE_VERIFIED_AUDIT.md §3.8/§5/§6.2.
+    std::string http_origin;
+    { auto oit = environment.find("HTTP_ORIGIN"); if ( oit != environment.end() ) { http_origin = oit->second; } }
+    bool origin_allowed = false;
+    if ( !http_origin.empty() && !m_configuration["allowed_origins"].empty() ) {
+        std::stringstream origins_stream(m_configuration["allowed_origins"]);
+        std::string one_origin;
+        while ( std::getline(origins_stream, one_origin, ',') ) {
+            OmniIndex::Utils::Utils::trim(one_origin);
+            if ( !one_origin.empty() && one_origin == http_origin ) { origin_allowed = true; break; }
+        }
+    }
+    std::string request_method_for_cors;
+    { auto mit = environment.find("REQUEST_METHOD"); if ( mit != environment.end() ) { request_method_for_cors = mit->second; } }
+
+    /* Set the return headers in place */
+    if ( origin_allowed ) {
+        std::cout << "Access-Control-Allow-Origin: " << http_origin << "\r\n";
+        std::cout << "Vary: Origin\r\n";
+        std::cout << "Access-Control-Allow-Credentials: true\r\n";
+    }
+    std::cout << "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
+    std::cout << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
+    std::cout << "Content-Type: application/json\r\n\r\n";
+
+    // A cross-origin browser preflight only needs the headers above and a 2xx status —
+    // no command has ever been dispatched for OPTIONS, since REQUEST_METHOD-handling below
+    // only branches on GET vs POST.
+    if ( request_method_for_cors == "OPTIONS" ) {
+        std::cout.flush();
+        return 0;
+    }
+
     // Seed the connection pool exactly once, explicitly, with the single configured
     // service-account credentials — before any command handler can construct a
     // Postgresql object. ConnectionPool::initialize() is a no-op after its first call, so
@@ -2487,9 +2639,10 @@ int main (int argc, char** argv) {
    // queryString="username=sibain@omniindex.io&command=adduser&password=Ch35t3r&newuser=sibain@tendotzero.com&newpassword=123456789&address=11 church str, eyemouth berwickshire&zipcode=TD14 5DH&firstname=Simon&lastname=Bain&telephone=9172920751"; 
    // queryString="&command=getadvice&prompt=how do I knit";   
     #else
-        Environment <std::string, std::string> environment;
+        // `environment` itself is constructed once, earlier in main(), for the CORS Origin
+        // check above — reused here rather than redeclared.
         Environment<std::string, std::string>::iterator itr;
-        
+
         // Check REQUEST_METHOD to determine if GET or POST
         Environment<std::string, std::string>::iterator method_itr = environment.find("REQUEST_METHOD");
         std::string request_method = (method_itr != environment.end()) ? method_itr->second : "GET";
@@ -2566,35 +2719,40 @@ int main (int argc, char** argv) {
     // keep. Every command now requires real credentials.
     QueryData <std::string, std::string> queryData(queryString);
 
-    QueryData<std::string, std::string>::iterator it = queryData.find("username");
-    std::string username, command, password, database, email_address;
-    if ( it != queryData.end() ) {
-        email_address = it->second;
-        email_address = url_decode(email_address);
-    } else {
-        std::cout << "{\"error\": \"username and or password not found\"}\n\n";
-        return 0;
-    }
-    it = queryData.find("password");
-    if ( it != queryData.end() ) {
-        password = it->second;
-        password = url_decode(password);
-    } else {
-        std::cout << "{\"error\": \"username and or password not found\"}\n\n";
-        return 0;
-    }
-    it = queryData.find("command");
+    QueryData<std::string, std::string>::iterator it = queryData.find("command");
+    std::string username, command, password, database, email_address, session_token;
     if ( it != queryData.end() ) {
         command = it->second;
-        command = url_decode(command);       
+        command = url_decode(command);
     } else {
         /** return error  */
         std::cout << "{\"error\": \"I have nothing to do. Please supply a command parameter within your call!\"}\n\n";
         return 0;
     }
-    
     OmniIndex::Utils::Utils::toLower(command);
-    
+
+    it = queryData.find("token");
+    if ( it != queryData.end() ) {
+        session_token = url_decode(it->second);
+    }
+    it = queryData.find("username");
+    if ( it != queryData.end() ) {
+        email_address = url_decode(it->second);
+    }
+    it = queryData.find("password");
+    if ( it != queryData.end() ) {
+        password = url_decode(it->second);
+    }
+    // `login`/`logout` handle their own required-field checks below; every other command
+    // needs either a session token (the preferred path — see `login`'s response) or a
+    // resent username+password (still accepted so not-yet-migrated callers, e.g. the web
+    // store, keep working).
+    if ( command != "login" && command != "logout" && session_token.empty()
+         && ( email_address.empty() || password.empty() ) ) {
+        std::cout << "{\"error\": \"A session token, or a username and password, is required\"}\n\n";
+        return 0;
+    }
+
     // Login command doesn't need old user credentials check
     if ( command == "login" ) {
         std::string username, login_password;
@@ -2654,6 +2812,16 @@ int main (int argc, char** argv) {
             std::cerr << "[LOGIN] authenticate() returned" << std::endl;
             
             if (!auth_result.empty() && auth_result["authenticated"] == "true") {
+                // Issue a session token so the caller can stop resending the password on
+                // every subsequent call (CODE_VERIFIED_AUDIT.md §3.6/§5/§6.2). 12 hours
+                // covers a full shop shift; check_session_token() slides it forward on
+                // every use, so an actively-used till doesn't get logged out mid-shift.
+                std::string token = generate_session_token();
+                pgbc->execParams(
+                    "INSERT INTO store.sessions (user_id, token, expires_at) "
+                    "VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '12 hours')",
+                    {auth_result["id"], token});
+
                 nlohmann::json j;
                 j["success"] = true;
                 j["user_id"] = safe_stol(auth_result["id"]);
@@ -2661,6 +2829,8 @@ int main (int argc, char** argv) {
                 j["email"] = auth_result["email"];
                 j["role"] = auth_result["role"];
                 j["full_name"] = auth_result["full_name"];
+                j["token"] = token;
+                j["expires_in_seconds"] = 12 * 3600;
                 std::cout << j.dump() << "\n\n";
                 std::cout.flush();
             } else {
@@ -2673,9 +2843,28 @@ int main (int argc, char** argv) {
         }
         return 0;
     }
-    
-    // All other commands require user credentials validation
-    std::string user = check_user_credentials(email_address, password);
+
+    // Revokes a session token so it can no longer authenticate (§ above). Deliberately
+    // asks for nothing else — a caller logging out doesn't need to still be able to prove
+    // who it was — and always reports success, since "already logged out" isn't an error.
+    if ( command == "logout" ) {
+        if ( !session_token.empty() ) {
+            std::map<std::string, std::string> m_conf = get_configuration();
+            Postgresql pgbc(m_conf["username"], m_conf["password"], m_conf["server"], m_conf["port"], "postgres");
+            if ( pgbc._isConnected ) {
+                pgbc.execParams("UPDATE store.sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token = $1", {session_token});
+                pgbc.close();
+            }
+        }
+        emit_json_response("Logged out.");
+        return 0;
+    }
+
+    // All other commands require user credentials validation — a session token from
+    // `login` (preferred) or, for callers not yet migrated, a resent username+password.
+    std::string user = session_token.empty()
+        ? check_user_credentials(email_address, password)
+        : check_session_token(session_token);
     nlohmann::json jResp = json_row(user);
     nlohmann::json jUser = json_row(jResp.value("response", nlohmann::json::array()));
     // Reject if user is NOT active
@@ -2977,9 +3166,18 @@ int main (int argc, char** argv) {
     else if ( command == "getpublicconfig" ) {
         // 7.1#5: non-secret, client-safe config (a Stripe *publishable* key is designed
         // to be exposed to the browser) that must still come from real per-deployment
-        // config rather than be hardcoded in the till's JS source.
+        // config rather than be hardcoded in the till's JS source. Same reasoning now
+        // applies to the Star WebPRNT printer URL and store branding text (previously
+        // hardcoded "http://localhost:8001/..." and "Curiosity Cabin"/thecuriositycabins.com
+        // — leftovers from a specific prior deployment, not configurable for a fresh
+        // install of this template) — see CODE_VERIFIED_AUDIT.md §10.
         nlohmann::json out;
         out["stripe_publishable_key"] = m_configuration["stripe_publishable_key"];
+        out["star_printer_url"] = !m_configuration["star_printer_url"].empty()
+            ? m_configuration["star_printer_url"] : "http://localhost:8001/StarWebPRNT/SendMessage";
+        out["store_name"] = !m_configuration["store_name"].empty()
+            ? m_configuration["store_name"] : "Boudica POS";
+        out["store_website"] = m_configuration["store_website"];
         std::cout << out.dump() << "\n\n";
         return 0;
     }
@@ -3106,7 +3304,7 @@ int main (int argc, char** argv) {
         }
     }
     else if (command == "adduser" ) {
-        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        if ( !user_is_admin(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string new_user, new_password, address, telephone, zip_code, first_name, last_name;
         it = queryData.find("newuser");
         if ( it != queryData.end() ) {
@@ -3167,7 +3365,7 @@ int main (int argc, char** argv) {
     }
     else if ( command == "webstoreorder" ) {
         std::string order_id, items_json, total_value, payment_method;
-        std::string customer_email = email_address;
+        std::string customer_email = email_address.empty() ? json_str(jUser, "email") : email_address;
 
         it = queryData.find("order_id");
         if ( it != queryData.end() ) {
@@ -3201,7 +3399,7 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "orderhistory" ) {
-        std::string customer_email = email_address;
+        std::string customer_email = email_address.empty() ? json_str(jUser, "email") : email_address;
 
         if ( customer_email.empty() ) {
             emit_json_error("Customer email not found");
@@ -3229,7 +3427,7 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "salesreport" ) {
-        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        if ( !user_is_admin(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string start_date, end_date;
         
         it = queryData.find("start_date");
@@ -3255,7 +3453,7 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "revenuereport" ) {
-        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        if ( !user_is_admin(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string start_date, end_date;
         
         it = queryData.find("start_date");
@@ -3281,7 +3479,10 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "inventoryreport" ) {
-        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        // Stock levels aren't the confidential figures salesreport/revenuereport/taxsummary
+        // are — any active till user can see what's in stock (they need to, to do their
+        // job), per CODE_VERIFIED_AUDIT.md §8's RBAC pass. No user_is_privileged()/
+        // user_is_admin() gate here, deliberately.
         std::string response = get_inventory_report(json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
@@ -3319,7 +3520,7 @@ int main (int argc, char** argv) {
         return 0;
     }
     else if ( command == "taxsummary" ) {
-        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        if ( !user_is_admin(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
         std::string start_date, end_date;
         
         it = queryData.find("start_date");
@@ -3362,7 +3563,7 @@ int main (int argc, char** argv) {
     }
     else if ( command == "initiate_payment" ) {
         std::string order_id, total_value, payment_type;
-        std::string customer_email = email_address;
+        std::string customer_email = email_address.empty() ? json_str(jUser, "email") : email_address;
         
         it = queryData.find("order_id");
         if ( it != queryData.end() ) {
@@ -3445,7 +3646,7 @@ int main (int argc, char** argv) {
     }
     else if ( command == "confirm_payment" ) {
         std::string payment_intent_id, order_id;
-        std::string customer_email = email_address;
+        std::string customer_email = email_address.empty() ? json_str(jUser, "email") : email_address;
         
         it = queryData.find("payment_intent_id");
         if ( it != queryData.end() ) {
@@ -3505,7 +3706,7 @@ int main (int argc, char** argv) {
     }
     else if ( command == "till_card_sale" ) {
         std::string operator_id, total_value;
-        std::string customer_email = email_address;
+        std::string customer_email = email_address.empty() ? json_str(jUser, "email") : email_address;
         
         it = queryData.find("operator_id");
         if ( it != queryData.end() ) {
