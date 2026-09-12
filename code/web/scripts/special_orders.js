@@ -28,8 +28,8 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         const User = get_localStorage('user');
-        const Password = get_localStorage('password');
-        if (!User || !Password) {
+        const Token = get_localStorage('token');
+        if (!User || !Token) {
             document.getElementById('login_div').style.display = 'flex';
             showToast('You must be logged in to take a special order.', 'error');
             return;

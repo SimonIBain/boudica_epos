@@ -1,3 +1,22 @@
+// Fetched once from the backend's own config (getpublicconfig, main.cpp) instead of being
+// hardcoded — the printer URL, store name, and website used to be
+// "http://localhost:8001/StarWebPRNT/SendMessage" / "Curiosity Cabin" /
+// "www.thecuriositycabins.com" respectively, leftovers from a specific prior deployment
+// that weren't configurable for a fresh install of this template
+// (CODE_VERIFIED_AUDIT.md §10). Same lazy-fetch-and-cache pattern as
+// till-card-payment.js's loadStripePublishableKey().
+let printerConfig = null;
+async function loadPrinterConfig() {
+    if (printerConfig) return printerConfig;
+    const json = await apiCall('getpublicconfig');
+    printerConfig = {
+        printerUrl: json.star_printer_url || 'http://localhost:8001/StarWebPRNT/SendMessage',
+        storeName: json.store_name || 'Boudica POS',
+        storeWebsite: json.store_website || ''
+    };
+    return printerConfig;
+}
+
 function showNowPrinting() {
     // In a real app, this would show a modal or overlay.
     // For now, we can just log to the console or show a toast.
@@ -65,7 +84,8 @@ function printReceipt(items, total, tax, paymentMethod, cashTendered = null, cha
     img.src = LOGO_PATH;
 }
 
-function drawReceiptContent(ctx, items, total, tax, paymentMethod, cashTendered, changeDue, startY) {
+async function drawReceiptContent(ctx, items, total, tax, paymentMethod, cashTendered, changeDue, startY) {
+    const config = await loadPrinterConfig();
     const canvas = ctx.canvas;
     const FONT_SIZE_NORMAL = 18;
     const FONT_SIZE_LARGE = 22;
@@ -79,7 +99,7 @@ function drawReceiptContent(ctx, items, total, tax, paymentMethod, cashTendered,
     // Header
     ctx.font = `bold ${FONT_SIZE_LARGE}px "Courier New", monospace`;
     ctx.textAlign = 'center';
-    ctx.fillText('Curiosity Cabin', canvas.width / 2, y += LINE_HEIGHT);
+    ctx.fillText(config.storeName, canvas.width / 2, y += LINE_HEIGHT);
     
     ctx.font = `${FONT_SIZE_NORMAL-4}px "Courier New", monospace`; // smaller font for date
     const now = new Date();
@@ -142,16 +162,21 @@ function drawReceiptContent(ctx, items, total, tax, paymentMethod, cashTendered,
     if (paymentMethod === 'Cash') {
         const builder = new StarWebPrintBuilder();
         try {
-        request = builder.createPeripheralElement({channel: StarWebPrintBuilder.PeripheralChannel.No1}); // Open cash drawer
-        } catch (error) {}
+            request = builder.createPeripheralElement({channel: StarWebPrintBuilder.PeripheralChannel.No1}); // Open cash drawer
+        } catch (error) {
+            console.error('Could not build cash-drawer-open command:', error);
+            showToast('Could not open the cash drawer automatically.', 'error');
+        }
     }
 
     // 4. Send to printer
-    sendCanvasToPrinter(canvas, request);    
+    sendCanvasToPrinter(canvas, request);
 
-    ctx.textAlign = 'center';
-    ctx.fillText('Visit our Website', canvas.width / 2, y += LINE_HEIGHT);
-    ctx.fillText('www.thecuriositycabins.com', canvas.width / 2, y += LINE_HEIGHT);    
+    if (config.storeWebsite) {
+        ctx.textAlign = 'center';
+        ctx.fillText('Visit our Website', canvas.width / 2, y += LINE_HEIGHT);
+        ctx.fillText(config.storeWebsite, canvas.width / 2, y += LINE_HEIGHT);
+    }
 }
 
 function printSpecialOrderReceipt(details) {
@@ -210,7 +235,8 @@ function printSpecialOrderReceipt(details) {
     
 }
 
-function drawSpecialOrderReceiptContent(ctx, details, startY) {
+async function drawSpecialOrderReceiptContent(ctx, details, startY) {
+    const config = await loadPrinterConfig();
     const canvas = ctx.canvas;
     const FONT_SIZE_NORMAL = 18;
     const FONT_SIZE_LARGE = 22;
@@ -224,7 +250,7 @@ function drawSpecialOrderReceiptContent(ctx, details, startY) {
     ctx.font = `bold ${FONT_SIZE_LARGE}px "Courier New", monospace`;
     ctx.fillText('** SPECIAL ORDER **', canvas.width / 2, y += LINE_HEIGHT);
     ctx.font = `${FONT_SIZE_NORMAL}px "Courier New", monospace`;
-    ctx.fillText('Curiosity Cabin', canvas.width / 2, y += LINE_HEIGHT);
+    ctx.fillText(config.storeName, canvas.width / 2, y += LINE_HEIGHT);
     
     ctx.font = `${FONT_SIZE_SMALL}px "Courier New", monospace`;
     const now = new Date();
@@ -274,48 +300,48 @@ function drawSpecialOrderReceiptContent(ctx, details, startY) {
 
     // 4. Send to printer
     sendCanvasToPrinter(canvas);
-    ctx.textAlign = 'center';
-    ctx.fillText('Visit our Website', canvas.width / 2, y += LINE_HEIGHT);
-    ctx.fillText('www.thecuriositycabins.com', canvas.width / 2, y += LINE_HEIGHT);
+    if (config.storeWebsite) {
+        ctx.textAlign = 'center';
+        ctx.fillText('Visit our Website', canvas.width / 2, y += LINE_HEIGHT);
+        ctx.fillText(config.storeWebsite, canvas.width / 2, y += LINE_HEIGHT);
+    }
 }
 
-function sendCanvasToPrinter(canvas, request) {
+async function sendCanvasToPrinter(canvas, request) {
     showNowPrinting();
 
-    // The printer URL might need to be configured. Using a common default.
-    // In a real app, this should be a configurable setting.
-    let url;
-    try {
-        url = 'http://localhost:8001/StarWebPRNT/SendMessage';
-    } catch (error) {
-        return;
-    }
+    // 7.3#2/§10: was hardcoded; now the deployment's configured printer URL (or the same
+    // localhost:8001 default as before, if unconfigured).
+    const config = await loadPrinterConfig();
+    const url = config.printerUrl;
     const papertype = 'raster';
 
     const trader = new StarWebPrintTrader({url:url, papertype:papertype});
 
+    // 7.3#1: these three failure paths used to be silent — the "Printing Failed" alert()
+    // was a blocking dialog (bad on a busy till), and the communication-error/exception
+    // paths had their alert() calls commented out entirely, so a cashier got no feedback
+    // at all if a receipt failed to print. All three now show a toast (non-blocking,
+    // consistent with every other error in this codebase) with the full detail logged to
+    // the console for whoever's troubleshooting the printer.
     trader.onReceive = function (response) {
         hideNowPrinting();
 
         if (!response.traderSuccess) {
-            let msg = '- Printing Failed -\n\n';
-            msg += 'TraderSuccess : [ ' + response.traderSuccess + ' ]\n';
-            msg += 'TraderStatus : [ ' + response.traderStatus + ',\n';
-            if (trader.isCoverOpen({traderStatus:response.traderStatus})) {msg += '\tCoverOpen,\n';}
-            if (trader.isOffLine({traderStatus:response.traderStatus})) {msg += '\tOffLine,\n';}
-            if (trader.isPaperEnd({traderStatus:response.traderStatus})) {msg += '\tPaperEnd,\n';}
-            msg += ' ]';
-            alert(msg);
+            const problems = [];
+            if (trader.isCoverOpen({traderStatus:response.traderStatus})) { problems.push('cover open'); }
+            if (trader.isOffLine({traderStatus:response.traderStatus})) { problems.push('offline'); }
+            if (trader.isPaperEnd({traderStatus:response.traderStatus})) { problems.push('out of paper'); }
+            const summary = problems.length > 0 ? problems.join(', ') : 'unknown fault';
+            console.error('Printing failed:', response);
+            showToast(`Printing failed (${summary}). Check the printer.`, 'error');
         }
     }
 
     trader.onError = function (response) {
         hideNowPrinting();
-        let msg = '- Printer Communication Error -\n\n';
-        msg += '\tStatus:' + response.status + '\n';
-        msg += '\tResponseText:' + response.responseText + '\n\n';
-        msg += 'Please ensure the Star WebPRNT service is running and accessible at ' + url;
-        //alert(msg);
+        console.error('Printer communication error:', response, 'url:', url);
+        showToast(`Could not reach the printer at ${url}. Is the Star WebPRNT service running?`, 'error');
     }
 
     try {
@@ -331,6 +357,7 @@ function sendCanvasToPrinter(canvas, request) {
     }
     catch (e) {
         hideNowPrinting();
-        //alert(e.message);
+        console.error('Could not build/send the print request:', e);
+        showToast('Could not send the receipt to the printer.', 'error');
     }
 }

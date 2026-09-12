@@ -12,8 +12,8 @@ document.addEventListener('DOMContentLoaded', function() {
         showLoadingOverlay();
         try {
             const User = get_localStorage('user');
-            const Password = get_localStorage('password');
-            if (!User || !Password) { throw new Error("User not logged in"); }
+            const Token = get_localStorage('token');
+            if (!User || !Token) { throw new Error("User not logged in"); }
 
             showToast('Processing End of Day...', 'info');
             const data = await apiCall('cashup');

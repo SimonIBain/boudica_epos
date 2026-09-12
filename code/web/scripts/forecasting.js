@@ -10,22 +10,6 @@
 
 // Configuration
 const FORECAST_API_BASE = '/api/boudica';
-const PGBC_AGENTS = 'http://localhost/cgi-bin/boudica_pos';
-
-// Cache for authentication
-let cachedUser = null;
-let cachedPassword = null;
-
-/**
- * Get user credentials from localStorage
- */
-function getCredentials() {
-    if (!cachedUser || !cachedPassword) {
-        cachedUser = get_localStorage('user');
-        cachedPassword = get_localStorage('password');
-    }
-    return { user: cachedUser, password: cachedPassword };
-}
 
 /**
  * Show/hide loading indicator
@@ -70,18 +54,8 @@ async function forecastDailySales() {
     resultDiv.style.display = 'none';
 
     try {
-        const creds = getCredentials();
-        const params = new URLSearchParams({
-            username: creds.user,
-            password: creds.password,
-            command: 'predict_daily_sales'
-        });
-
-        const response = await fetch(`${PGBC_AGENTS}?${params.toString()}`);
-        const text = await response.text();
-        
-        console.log('Daily forecast response:', text);
-        const data = parseJson(text);
+        const data = await apiCall('predict_daily_sales');
+        console.log('Daily forecast response:', data);
 
         if (data && !data.error) {
             // Extract forecast data
@@ -92,9 +66,9 @@ async function forecastDailySales() {
             
             if (forecast && forecast.predicted_sales) {
                 html += `<div class="result-value">${formatCurrency(forecast.predicted_sales)}</div>`;
-                html += `<div class="result-detail"><strong>Confidence:</strong> ${forecast.confidence_level || 'N/A'}</div>`;
+                html += `<div class="result-detail"><strong>Confidence:</strong> ${escapeHtml(forecast.confidence_level || 'N/A')}</div>`;
                 if (forecast.explanation) {
-                    html += `<div class="result-detail"><strong>Analysis:</strong> ${forecast.explanation}</div>`;
+                    html += `<div class="result-detail"><strong>Analysis:</strong> ${escapeHtml(forecast.explanation)}</div>`;
                 }
             } else if (dailyData) {
                 html += `<div class="result-detail"><strong>Historical Data:</strong> Available (${dailyData.num_days || 0} days)</div>`;
@@ -134,18 +108,8 @@ async function forecastWeeklySales() {
     resultDiv.style.display = 'none';
 
     try {
-        const creds = getCredentials();
-        const params = new URLSearchParams({
-            username: creds.user,
-            password: creds.password,
-            command: 'predict_weekly_sales'
-        });
-
-        const response = await fetch(`${PGBC_AGENTS}?${params.toString()}`);
-        const text = await response.text();
-        
-        console.log('Weekly forecast response:', text);
-        const data = parseJson(text);
+        const data = await apiCall('predict_weekly_sales');
+        console.log('Weekly forecast response:', data);
 
         if (data && !data.error) {
             const weeklyData = data.weekly_sales_data ? parseJson(JSON.stringify(data.weekly_sales_data)) : null;
@@ -155,12 +119,12 @@ async function forecastWeeklySales() {
             
             if (forecast && forecast.predicted_sales) {
                 html += `<div class="result-value">${formatCurrency(forecast.predicted_sales)}</div>`;
-                html += `<div class="result-detail"><strong>Confidence:</strong> ${forecast.confidence_level || 'N/A'}</div>`;
+                html += `<div class="result-detail"><strong>Confidence:</strong> ${escapeHtml(forecast.confidence_level || 'N/A')}</div>`;
                 if (forecast.trend) {
-                    html += `<div class="result-detail"><strong>Trend:</strong> ${forecast.trend}</div>`;
+                    html += `<div class="result-detail"><strong>Trend:</strong> ${escapeHtml(forecast.trend)}</div>`;
                 }
                 if (forecast.explanation) {
-                    html += `<div class="result-detail"><strong>Analysis:</strong> ${forecast.explanation}</div>`;
+                    html += `<div class="result-detail"><strong>Analysis:</strong> ${escapeHtml(forecast.explanation)}</div>`;
                 }
             } else if (weeklyData) {
                 html += `<div class="result-detail"><strong>Historical Data:</strong> Available</div>`;
@@ -200,18 +164,8 @@ async function forecastMonthlySales() {
     resultDiv.style.display = 'none';
 
     try {
-        const creds = getCredentials();
-        const params = new URLSearchParams({
-            username: creds.user,
-            password: creds.password,
-            command: 'predict_monthly_sales'
-        });
-
-        const response = await fetch(`${PGBC_AGENTS}?${params.toString()}`);
-        const text = await response.text();
-        
-        console.log('Monthly forecast response:', text);
-        const data = parseJson(text);
+        const data = await apiCall('predict_monthly_sales');
+        console.log('Monthly forecast response:', data);
 
         if (data && !data.error) {
             const monthlyData = data.monthly_sales_data ? parseJson(JSON.stringify(data.monthly_sales_data)) : null;
@@ -221,12 +175,12 @@ async function forecastMonthlySales() {
             
             if (forecast && forecast.predicted_sales) {
                 html += `<div class="result-value">${formatCurrency(forecast.predicted_sales)}</div>`;
-                html += `<div class="result-detail"><strong>Confidence:</strong> ${forecast.confidence_level || 'N/A'}</div>`;
+                html += `<div class="result-detail"><strong>Confidence:</strong> ${escapeHtml(forecast.confidence_level || 'N/A')}</div>`;
                 if (forecast.seasonal_trend) {
-                    html += `<div class="result-detail"><strong>Seasonal Trend:</strong> ${forecast.seasonal_trend}</div>`;
+                    html += `<div class="result-detail"><strong>Seasonal Trend:</strong> ${escapeHtml(forecast.seasonal_trend)}</div>`;
                 }
                 if (forecast.explanation) {
-                    html += `<div class="result-detail"><strong>Analysis:</strong> ${forecast.explanation}</div>`;
+                    html += `<div class="result-detail"><strong>Analysis:</strong> ${escapeHtml(forecast.explanation)}</div>`;
                 }
             } else if (monthlyData) {
                 html += `<div class="result-detail"><strong>Historical Data:</strong> Available</div>`;
@@ -274,28 +228,17 @@ async function predictReorderDate() {
     resultDiv.style.display = 'none';
 
     try {
-        const creds = getCredentials();
-        const params = new URLSearchParams({
-            username: creds.user,
-            password: creds.password,
-            command: 'predict_reorder_date',
-            barcode: barcode
-        });
-
-        const response = await fetch(`${PGBC_AGENTS}?${params.toString()}`);
-        const text = await response.text();
-        
-        console.log('Reorder prediction response:', text);
-        const data = parseJson(text);
+        const data = await apiCall('predict_reorder_date', { barcode });
+        console.log('Reorder prediction response:', data);
 
         if (data && !data.error) {
             const itemData = data.item_data ? parseJson(JSON.stringify(data.item_data)) : null;
             const prediction = data.reorder_prediction ? parseJson(JSON.stringify(data.reorder_prediction)) : null;
 
-            let html = `<div class="result-label">📦 ${barcode}</div>`;
+            let html = `<div class="result-label">📦 ${escapeHtml(barcode)}</div>`;
             
             if (itemData && itemData.product_description) {
-                html += `<div class="result-detail"><strong>Product:</strong> ${itemData.product_description}</div>`;
+                html += `<div class="result-detail"><strong>Product:</strong> ${escapeHtml(itemData.product_description)}</div>`;
                 html += `<div class="result-detail"><strong>Stock:</strong> ${itemData.quantity || 0} | Available: ${itemData.available || 0}</div>`;
             }
 
@@ -309,15 +252,15 @@ async function predictReorderDate() {
                     html += `⏰ ${daysNum} days`;
                     html += `</div>`;
                     
-                    html += `<div class="result-detail"><strong>Priority:</strong> ${prediction.priority ? prediction.priority.toUpperCase() : 'NORMAL'}</div>`;
+                    html += `<div class="result-detail"><strong>Priority:</strong> ${escapeHtml(prediction.priority ? prediction.priority.toUpperCase() : 'NORMAL')}</div>`;
                 }
 
                 if (prediction.recommended_quantity) {
-                    html += `<div class="result-detail"><strong>Recommended Qty:</strong> ${prediction.recommended_quantity} units</div>`;
+                    html += `<div class="result-detail"><strong>Recommended Qty:</strong> ${escapeHtml(prediction.recommended_quantity)} units</div>`;
                 }
 
                 if (prediction.explanation) {
-                    html += `<div class="result-detail">${prediction.explanation}</div>`;
+                    html += `<div class="result-detail">${escapeHtml(prediction.explanation)}</div>`;
                 }
             } else {
                 html += '<div class="result-detail"><em>Boudica AI analysis is processing...</em></div>';

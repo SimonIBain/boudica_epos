@@ -318,42 +318,10 @@ function closeCardPaymentModal() {
     }
 }
 
-/**
- * Add card payment button to till interface
- * Call this when setting up payment options
- */
-function addCardPaymentOption() {
-    // This would be called by till.js to add the card payment button
-    // Return HTML for the card payment button
-    return `
-        <button id="till-card-payment-btn" class="btn btn-primary" onclick="window.tillCardPayment.handleCardPaymentClick()">
-            💳 Card Payment
-        </button>
-    `;
-}
-
-/**
- * Handle card payment button click
- */
-function handleCardPaymentClick() {
-    // Get current receipt total
-    const totalElement = document.querySelector('[data-receipt-total]');
-    if (!totalElement) {
-        alert('No items in receipt. Please add items before paying by card.');
-        return;
-    }
-
-    const total = parseFloat(totalElement.dataset.receiptTotal);
-    const operatorId = localStorage.getItem('currentOperator') || 'unknown';
-
-    openCardPaymentModal(total, operatorId, 'CARD_' + Date.now());
-}
-
 // Make functions available globally for inline onclick handlers
 window.tillCardPayment = {
     openCardPaymentModal,
     closeCardPaymentModal,
-    handleCardPaymentClick,
     processTillCardSale,
     initializeTillStripe
 };

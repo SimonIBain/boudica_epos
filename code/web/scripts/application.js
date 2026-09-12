@@ -5,7 +5,27 @@ const PGBC_Manager = "/cgi-bin/pgbcadmin";
 const TAX_RATE = 20;
 
 /**
- * Shared helper for every till->backend call. Two things every ad hoc fetch() in this
+ * Escapes a value for safe insertion into an innerHTML template literal. Every
+ * DB-sourced field (product/supplier/customer descriptions, AI advice text) and every
+ * raw user-typed value (a scanned/typed barcode) rendered this way was previously
+ * unescaped — a crafted product description or AI response could inject a script that
+ * runs in a logged-in operator's till session and steals the session token straight out
+ * of localStorage (CODE_VERIFIED_AUDIT.md §3.7). Coerces non-strings (numbers, null,
+ * undefined) to '' / their string form first so every call site can pass a value
+ * through unconditionally.
+ */
+function escapeHtml(value) {
+    if (value === null || value === undefined) { return ''; }
+    return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+/**
+ * Shared helper for every till->backend call. Things every ad hoc fetch() in this
  * codebase used to get wrong on its own:
  *  - Sends credentials in a POST body instead of a GET query string (7.1#14 — a GET
  *    query string lands in the browser's own history and in any server/proxy access
@@ -13,14 +33,17 @@ const TAX_RATE = 20;
  *  - Parses the *whole* response body as JSON instead of truncating at the first "}"
  *    (7.1#3/#6 — that trick landed inside nested objects on real API responses, e.g.
  *    getdetails, and silently corrupted or dropped them).
+ *  - Sends the session token issued by login.js instead of the plaintext password
+ *    (CODE_VERIFIED_AUDIT.md §3.6/§5/§6.2) — the till never stores or resends the
+ *    password itself once logged in.
  * Always resolves to a parsed object; a transport, HTTP, or parse failure resolves to
  * { error: "..." } rather than throwing, so every caller only ever needs to check
  * `.error` on the result — never response.ok alone.
  */
 async function apiCall(command, extraParams = {}) {
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    const body = new URLSearchParams({ username: User || '', password: Password || '', command, ...extraParams });
+    const Token = get_localStorage('token');
+    const body = new URLSearchParams({ username: User || '', token: Token || '', command, ...extraParams });
     let response;
     try {
         response = await fetch(PGBC_Agents, {
@@ -65,12 +88,12 @@ document.addEventListener('DOMContentLoaded', function() {
     updateDateTime();
     setInterval(updateDateTime, 1000);
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    if ( !User || !Password ) {
-        document.getElementById('login_div').style.display = 'flex'; 
-        return; 
+    const Token = get_localStorage('token');
+    if ( !User || !Token ) {
+        document.getElementById('login_div').style.display = 'flex';
+        return;
     }
-    load_supplier_list(User, Password); /** Do not wait for this to return */
+    load_supplier_list(User); /** Do not wait for this to return */
 });
 
 
@@ -135,8 +158,8 @@ document.getElementById('add-supplier-form').addEventListener('submit', async fu
         return;
     }
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    if ( !User || !Password ) {
+    const Token = get_localStorage('token');
+    if ( !User || !Token ) {
         document.getElementById('login_div').style.display = 'flex';
         //showToast('You must be logged in to add a supplier.', 'error');
         return;
@@ -156,6 +179,6 @@ document.getElementById('add-supplier-form').addEventListener('submit', async fu
     } else {
         showToast('Supplier has been added to the system.', 'info');
         /** Update teh supplier list  */
-        load_supplier_list(User, Password);
+        load_supplier_list(User);
     }
 });

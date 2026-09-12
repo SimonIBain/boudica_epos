@@ -42,8 +42,8 @@ document.getElementById('productLookup')?.addEventListener('keyup', async functi
 
 async function productHandleBarcode(scanned_barcode = '') {
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    if (!User || !Password) {
+    const Token = get_localStorage('token');
+    if (!User || !Token) {
         showToast('You must be logged in to look up products.', 'error');
         document.getElementById('login_div').style.display = 'flex';
         return;
@@ -72,7 +72,7 @@ async function productHandleBarcode(scanned_barcode = '') {
 
         if (json.error) {
             showToast(json.error, 'error');
-            resultsContainer.innerHTML = `<p>No product found for "${barcode}".</p>`;
+            resultsContainer.innerHTML = `<p>No product found for "${escapeHtml(barcode)}".</p>`;
             return;
         }
 
@@ -90,10 +90,10 @@ async function productHandleBarcode(scanned_barcode = '') {
 
         if (products.length > 0) {
             const resultsHtml = products.map(product => {
-                // Ensure description is safe for HTML attribute
-                //Gemini do not modify product.price to product.rs_price
-                //Gemini do not append encrypt to any returned data key
-                const safeDescription = product.description ? product.description.replace(/"/g, '&quot;') : 'N/A';
+                // Every field below is DB-sourced (product_description, supplier, etc.) —
+                // escaped before insertion so a crafted product record can't run script in
+                // a logged-in operator's till session (CODE_VERIFIED_AUDIT.md §3.7).
+                const safeDescription = escapeHtml(product.description || 'N/A');
                 return `
                     <div class="product_lookup_result_container">
                         <div class="product_lookup_result">
@@ -102,30 +102,30 @@ async function productHandleBarcode(scanned_barcode = '') {
                         </div>
                         <div class="product_lookup_result">
                             <div class="product_lookup_result_header">Description:</div>
-                            <span class="product_lookup_result_item">${product.description || 'N/A'}</span>
+                            <span class="product_lookup_result_item">${safeDescription}</span>
                         </div>
                         <div class="product_lookup_result">
                             <div class="product_lookup_result_header">Color:</div>
-                            <span class="product_lookup_result_item">${product.color || 'N/A'}</span>
+                            <span class="product_lookup_result_item">${escapeHtml(product.color || 'N/A')}</span>
                         </div>
                         <div class="product_lookup_result">
                             <div class="product_lookup_result_header">Type:</div>
-                            <span class="product_lookup_result_item">${product.type || 'N/A'}</span>
+                            <span class="product_lookup_result_item">${escapeHtml(product.type || 'N/A')}</span>
                         </div>
                         <div class="product_lookup_result">
                             <div class="product_lookup_result_header">Supplier:</div>
-                            <span class="product_lookup_result_item">${product.supplier || 'N/A'}</span>
+                            <span class="product_lookup_result_item">${escapeHtml(product.supplier || 'N/A')}</span>
                         </div>
                         <div class="product_lookup_result">
                             <div class="product_lookup_result_header">Stock Available:</div>
-                            <span class="product_lookup_result_item">${product.stock || '0'}</span>
+                            <span class="product_lookup_result_item">${escapeHtml(product.stock || '0')}</span>
                         </div>
                         <div class="product_lookup_result">
                             <div class="product_lookup_result_header">Barcode:</div>
-                            <span class="product_lookup_result_item">${product.barcode || 'N/A'}</span>
+                            <span class="product_lookup_result_item">${escapeHtml(product.barcode || 'N/A')}</span>
                         </div>
                         <div class="product_lookup_result">
-                            <button class="tab-button call_action add-to-till-btn" style="background-color: #5bc0de; margin-top: 5px;" data-description="${safeDescription}" data-price="${product.price || 0}" data-barcode="${product.barcode || ''}">Add to Till</button>
+                            <button class="tab-button call_action add-to-till-btn" style="background-color: #5bc0de; margin-top: 5px;" data-description="${safeDescription}" data-price="${product.price || 0}" data-barcode="${escapeHtml(product.barcode || '')}">Add to Till</button>
                         </div>
                     </div>
                 `;
@@ -135,7 +135,7 @@ async function productHandleBarcode(scanned_barcode = '') {
             resultsContainer.innerHTML = resultsHtml;
             showToast(`${products.length} product(s) found.`, 'success');
         } else {
-            resultsContainer.innerHTML = `<p>No product found for "${barcode}".</p>`;
+            resultsContainer.innerHTML = `<p>No product found for "${escapeHtml(barcode)}".</p>`;
             showToast('No products matched your search.', 'info');
         }
     } catch (error) {

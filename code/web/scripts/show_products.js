@@ -1,8 +1,8 @@
 document.addEventListener('DOMContentLoaded', function() {
 
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    if ( !User || !Password ) {
+    const Token = get_localStorage('token');
+    if ( !User || !Token ) {
         document.getElementById('login_div').style.display = 'flex'; 
         //showToast('You must be logged in to add a supplier.', 'error');
         return; 
@@ -50,11 +50,11 @@ document.addEventListener('DOMContentLoaded', function() {
             </thead>
             <tbody>
                 ${products.map(product => `
-                    <tr data-barcode="${product.barcode}">
-                        <td>${product.description}</td>
+                    <tr data-barcode="${escapeHtml(product.barcode)}">
+                        <td>${escapeHtml(product.description)}</td>
                         <td><div contenteditable="true">£${parseFloat(product.price).toFixed(2)}</div></td>
-                        <td><input type="text" value="${product.barcode}" /></td>
-                        <td><button class="update-product-btn" data-barcode="${product.barcode}">Update</button></td>
+                        <td><input type="text" value="${escapeHtml(product.barcode)}" /></td>
+                        <td><button class="update-product-btn" data-barcode="${escapeHtml(product.barcode)}">Update</button></td>
                     </tr>
                 `).join('')}
             </tbody>
@@ -76,7 +76,12 @@ document.addEventListener('DOMContentLoaded', function() {
         showLoadingOverlay();
         try {
             const query = `SELECT supplierencrypt, barcode, rs_price, product_description FROM store.products WHERE ~ store.products.supplierencrypt = '${selectedSupplier}' ~ ;`;
-            let response = await fetch(`${PGBC_Manager}?username=${User}&command=runquery&password=${Password}&query=${query}&explain=false&display=false`);
+            // Note: PGBC_Manager (/cgi-bin/pgbcadmin) is a separate, unrelated legacy admin
+            // CGI from a prior deployment — not part of this backend and not shipped in
+            // docker/backend, so this call already 404s in this stack regardless of
+            // credentials. Left as pre-existing orphaned code; not migrated to the token
+            // scheme since that CGI doesn't know about store.sessions.
+            let response = await fetch(`${PGBC_Manager}?username=${User}&command=runquery&password=${Token}&query=${query}&explain=false&display=false`);
             
             if (!response.ok) {
                 showToast('The application returned an unrecognized error. Please retry.', 'error');

@@ -34,9 +34,9 @@ async function loadReport() {
     showLoadingOverlay();
 
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    
-    if (!User || !Password) {
+    const Token = get_localStorage('token');
+
+    if (!User || !Token) {
         hideLoadingOverlay();
         showToast('Not authenticated', 'error');
         return;
@@ -49,16 +49,16 @@ async function loadReport() {
             const tabText = activeTab.textContent.toLowerCase();
             if (tabText.includes('sales')) {
                 currentReportType = 'sales';
-                await loadSalesReport(User, Password, startDate, endDate);
+                await loadSalesReport(startDate, endDate);
             } else if (tabText.includes('revenue')) {
                 currentReportType = 'revenue';
-                await loadRevenueReport(User, Password, startDate, endDate);
+                await loadRevenueReport(startDate, endDate);
             } else if (tabText.includes('inventory')) {
                 currentReportType = 'inventory';
-                await loadInventoryReport(User, Password, startDate, endDate);
+                await loadInventoryReport(startDate, endDate);
             } else if (tabText.includes('tax')) {
                 currentReportType = 'tax';
-                await loadTaxReport(User, Password, startDate, endDate);
+                await loadTaxReport(startDate, endDate);
             }
         }
     } catch (error) {
@@ -69,7 +69,7 @@ async function loadReport() {
     }
 }
 
-async function loadSalesReport(user, password, startDate, endDate) {
+async function loadSalesReport(startDate, endDate) {
     try {
         const jsonData = await apiCall('salesreport', { start_date: startDate, end_date: endDate });
 
@@ -99,8 +99,8 @@ function displaySalesReport(data) {
     
     data.sales.forEach(item => {
         html += `<tr>
-            <td>${item.description}</td>
-            <td>${item.quantity}</td>
+            <td>${escapeHtml(item.description)}</td>
+            <td>${escapeHtml(item.quantity)}</td>
             <td>£${parseFloat(item.unit_price).toFixed(2)}</td>
             <td>£${parseFloat(item.revenue).toFixed(2)}</td>
         </tr>`;
@@ -123,7 +123,7 @@ function displaySalesReport(data) {
     container.innerHTML = html;
 }
 
-async function loadRevenueReport(user, password, startDate, endDate) {
+async function loadRevenueReport(startDate, endDate) {
     try {
         const jsonData = await apiCall('revenuereport', { start_date: startDate, end_date: endDate });
 
@@ -175,7 +175,7 @@ function displayRevenueReport(data) {
     container.innerHTML = html;
 }
 
-async function loadInventoryReport(user, password, startDate, endDate) {
+async function loadInventoryReport(startDate, endDate) {
     try {
         const jsonData = await apiCall('inventoryreport');
 
@@ -205,11 +205,11 @@ function displayInventoryReport(data) {
     
     data.inventory.forEach(item => {
         html += `<tr>
-            <td>${item.description}</td>
-            <td>${item.quantity}</td>
+            <td>${escapeHtml(item.description)}</td>
+            <td>${escapeHtml(item.quantity)}</td>
             <td>£${parseFloat(item.unit_price).toFixed(2)}</td>
             <td>£${parseFloat(item.inventory_value).toFixed(2)}</td>
-            <td>${item.supplier || 'N/A'}</td>
+            <td>${escapeHtml(item.supplier || 'N/A')}</td>
         </tr>`;
     });
 
@@ -229,7 +229,7 @@ function displayInventoryReport(data) {
     container.innerHTML = html;
 }
 
-async function loadTaxReport(user, password, startDate, endDate) {
+async function loadTaxReport(startDate, endDate) {
     try {
         const jsonData = await apiCall('taxsummary', { start_date: startDate, end_date: endDate });
 

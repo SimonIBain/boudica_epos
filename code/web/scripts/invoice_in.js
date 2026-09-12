@@ -54,8 +54,8 @@ document.getElementById('invoice-in-form')?.addEventListener('submit', async fun
     ev.preventDefault();
 
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    if (!User || !Password) {
+    const Token = get_localStorage('token');
+    if (!User || !Token) {
         document.getElementById('login_div').style.display = 'flex';
         showToast('You must be logged in to add an invoice.', 'error');
         return;
@@ -78,7 +78,7 @@ document.getElementById('invoice-in-form')?.addEventListener('submit', async fun
     // Use FormData to handle both form fields and the potential file upload.
     const formData = new FormData();
     formData.append('username', User);
-    formData.append('password', Password);
+    formData.append('token', Token);
     formData.append('command', 'addinvoice');
     formData.append('supplier', supplier);
     formData.append('invoicenumber', invoiceNumber);

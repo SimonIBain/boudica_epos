@@ -56,8 +56,8 @@ document.getElementById('stock-in-form')?.addEventListener('submit', async funct
 // Function to add stock using barcode and quantity
 async function stockInItem(barcode, quantity) {
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    if (!User || !Password) {
+    const Token = get_localStorage('token');
+    if (!User || !Token) {
         document.getElementById('login_div').style.display = 'flex';
         return;
     }

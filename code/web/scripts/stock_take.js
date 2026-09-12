@@ -77,18 +77,23 @@ document.getElementById('set-stock_take_complete_btn').addEventListener('click',
         let resultsHtml = '';
         for (const key in stockDetails) {
             const iter = stockDetails[key];
-            // Escape single quotes in supplier name to prevent breaking the onclick attribute
-            const safeSupplier = iter.supplier ? iter.supplier.replace(/'/g, "\\'") : '';
+            // Every DB-sourced field below is escaped before insertion — a crafted
+            // barcode/description/supplier could otherwise inject script, or (via the old
+            // inline onclick="updateStock('...')" pattern) break out of that JS string
+            // literal entirely regardless of HTML-entity escaping. Replaced the inline
+            // onclick with a data-barcode attribute plus a delegated click listener below,
+            // which sidesteps that class of bug rather than trying to double-escape for it.
+            const safeBarcode = escapeHtml(iter.barcode);
             resultsHtml += `<div class="product_lookup_result_container">
-                <div class="product_lookup_result"><div class="product_lookup_result_header">Barcode:</div><span class="product_lookup_result_item">${iter.barcode}</span></div>
-                <div class="product_lookup_result"><div class="product_lookup_result_header">Supplier:</div><span class="product_lookup_result_item">${iter.supplier || 'N/A'}</span></div>
-                <div class="product_lookup_result"><div class="product_lookup_result_header">Description:</div><span class="product_lookup_result_item">${iter.description || 'N/A'}</span></div>
-                <div class="product_lookup_result"><div class="product_lookup_result_header">Color:</div><span class="product_lookup_result_item">${iter.color || 'N/A'}</span></div>
-                <div class="product_lookup_result"><div class="product_lookup_result_header">Type:</div><span class="product_lookup_result_item">${iter.type || 'N/A'}</span></div>
-                <div class="product_lookup_result"><div class="product_lookup_result_header">Stock Count:</div><input type="number" id="${iter.barcode}_counted" name="stock-count" min="0" step="1" required value="${iter.counted}"></div>
-                <div class="product_lookup_result"><div class="product_lookup_result_header">Stock Registered:</div><span class="product_lookup_result_item">${iter.stock}</span></div>
-                <div class="product_lookup_result"><div class="product_lookup_result_header">Discrepancy:</div><span class="product_lookup_result_item" id="${iter.barcode}_descrepency">${iter.descrepency}</span></div>
-                <div class="product_lookup_result"><button type="button" class="tab-button call_action" id="${iter.barcode}_btn" style="background-color: #486586;" onclick="updateStock('${iter.barcode}', '${safeSupplier}')">Update Stock</button></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Barcode:</div><span class="product_lookup_result_item">${safeBarcode}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Supplier:</div><span class="product_lookup_result_item">${escapeHtml(iter.supplier || 'N/A')}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Description:</div><span class="product_lookup_result_item">${escapeHtml(iter.description || 'N/A')}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Color:</div><span class="product_lookup_result_item">${escapeHtml(iter.color || 'N/A')}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Type:</div><span class="product_lookup_result_item">${escapeHtml(iter.type || 'N/A')}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Stock Count:</div><input type="number" id="${safeBarcode}_counted" name="stock-count" min="0" step="1" required value="${escapeHtml(iter.counted)}"></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Stock Registered:</div><span class="product_lookup_result_item">${escapeHtml(iter.stock)}</span></div>
+                <div class="product_lookup_result"><div class="product_lookup_result_header">Discrepancy:</div><span class="product_lookup_result_item" id="${safeBarcode}_descrepency">${escapeHtml(iter.descrepency)}</span></div>
+                <div class="product_lookup_result"><button type="button" class="tab-button call_action stock-take-update-btn" id="${safeBarcode}_btn" style="background-color: #486586;" data-barcode="${safeBarcode}">Update Stock</button></div>
             </div> `;
         }
 
@@ -106,25 +111,25 @@ document.getElementById('set-stock_take_complete_btn').addEventListener('click',
     }
 });
 
+// Delegated listener replacing the old inline onclick="updateStock('${barcode}', ...)"
+// pattern — that embedded DB-sourced values directly into a JS string literal inside an
+// HTML attribute, which HTML-entity escaping alone doesn't make safe (the browser decodes
+// entities in the attribute back to the original text before the inline handler runs, so
+// a barcode/supplier containing a stray quote could still break out of the JS string).
+// Reading the value back off .dataset instead sidesteps that class of bug entirely.
+document.getElementById('stock_take_completion')?.addEventListener('click', function(event) {
+    const button = event.target.closest('.stock-take-update-btn');
+    if (button) {
+        updateStock(button.dataset.barcode);
+    }
+});
+
 document.getElementById('accept-all-discrepancies-btn')?.addEventListener('click', async function() {
     showToast('Accepting all discrepancies. This may take a moment...', 'info');
     showLoadingOverlay();
     try {
-        const updateButtons = document.querySelectorAll('#stock_take_completion button[onclick^="updateStock"]');
-
-        const updatePromises = [];
-        updateButtons.forEach(button => {
-            const onclickAttr = button.getAttribute('onclick');
-            // Extracts arguments from a string like "updateStock('barcode123', 'Supplier Name\\'s')"
-            const matches = onclickAttr.match(/updateStock\('([^']*)', '((?:[^']|\\')*)'\)/);
-            if (matches && matches.length === 3) {
-                const barcode = matches[1];
-                const supplier = matches[2].replace(/\\'/g, "'"); // Un-escape single quotes
-                updatePromises.push(updateStock(barcode, supplier));
-            } else {
-                console.warn('Could not parse arguments from onclick attribute:', onclickAttr);
-            }
-        });
+        const updateButtons = document.querySelectorAll('#stock_take_completion .stock-take-update-btn');
+        const updatePromises = Array.from(updateButtons).map(button => updateStock(button.dataset.barcode));
 
         if (updatePromises.length > 0) {
             await Promise.all(updatePromises);
@@ -138,10 +143,10 @@ document.getElementById('accept-all-discrepancies-btn')?.addEventListener('click
     }
 });
 
-async function updateStock(barcode, supplier) {
+async function updateStock(barcode) {
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
-    if (!User || !Password) {
+    const Token = get_localStorage('token');
+    if (!User || !Token) {
         document.getElementById('login_div').style.display = 'flex';
         return;
     }

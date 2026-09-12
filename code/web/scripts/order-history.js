@@ -11,9 +11,9 @@ async function loadOrderHistory() {
     showLoadingOverlay();
 
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
+    const Token = get_localStorage('token');
     
-    if (!User || !Password) {
+    if (!User || !Token) {
         hideLoadingOverlay();
         showToast('Not authenticated', 'error');
         return;
@@ -53,18 +53,23 @@ function displayOrderHistory(data) {
         const subtotal = parseFloat(order.subtotal || 0).toFixed(2);
         const vat = parseFloat(order.vat_amount || 0).toFixed(2);
         const total = parseFloat(order.total_value).toFixed(2);
-        
+        // Every DB-sourced field is escaped, and the two action buttons carry their data
+        // in data-* attributes read via .dataset (see the delegated listener below)
+        // instead of the old onclick="viewOrderDetails('${order.order_id}', ...)" pattern
+        // — embedding DB content straight into an inline handler's JS string literal isn't
+        // made safe by HTML-entity escaping alone, since the browser decodes entities in
+        // an attribute back to the original text before that inline handler ever runs.
         html += `<tr>
-            <td><strong>${order.order_id}</strong></td>
+            <td><strong>${escapeHtml(order.order_id)}</strong></td>
             <td>${orderDate}</td>
-            <td><span class="status-badge ${order.order_status.toLowerCase()}">${order.order_status}</span></td>
-            <td>${order.payment_method}</td>
+            <td><span class="status-badge ${escapeHtml((order.order_status || '').toLowerCase())}">${escapeHtml(order.order_status)}</span></td>
+            <td>${escapeHtml(order.payment_method)}</td>
             <td>£${subtotal}</td>
             <td>£${vat} (20%)</td>
             <td><strong>£${total}</strong></td>
             <td>
-                <button class="action-btn" onclick="viewOrderReceipt('${order.order_id}')">🖨️ Receipt</button>
-                <button class="action-btn" onclick="viewOrderDetails('${order.order_id}', '${order.order_date}', '${order.order_status}', ${subtotal}, ${vat}, ${total})">📋 Details</button>
+                <button class="action-btn view-receipt-btn" data-order-id="${escapeHtml(order.order_id)}">🖨️ Receipt</button>
+                <button class="action-btn view-details-btn" data-order-id="${escapeHtml(order.order_id)}" data-order-date="${escapeHtml(order.order_date)}" data-order-status="${escapeHtml(order.order_status)}" data-subtotal="${subtotal}" data-vat="${vat}" data-total="${total}">📋 Details</button>
             </td>
         </tr>`;
     });
@@ -72,6 +77,19 @@ function displayOrderHistory(data) {
     html += '</tbody></table>';
     container.innerHTML = html;
 }
+
+document.getElementById('orders-container')?.addEventListener('click', function(event) {
+    const receiptBtn = event.target.closest('.view-receipt-btn');
+    if (receiptBtn) {
+        viewOrderReceipt(receiptBtn.dataset.orderId);
+        return;
+    }
+    const detailsBtn = event.target.closest('.view-details-btn');
+    if (detailsBtn) {
+        const d = detailsBtn.dataset;
+        viewOrderDetails(d.orderId, d.orderDate, d.orderStatus, d.subtotal, d.vat, d.total);
+    }
+});
 
 function viewOrderDetails(orderId, orderDate, status, subtotal, vat, total) {
     const modal = document.createElement('div');
@@ -89,9 +107,9 @@ function viewOrderDetails(orderId, orderDate, status, subtotal, vat, total) {
             </div>
             <div class="modal-body">
                 <div class="order-details-info">
-                    <p><strong>Order ID:</strong> ${orderId}</p>
-                    <p><strong>Date:</strong> ${formattedDate}</p>
-                    <p><strong>Status:</strong> <span class="status-badge ${status.toLowerCase()}">${status}</span></p>
+                    <p><strong>Order ID:</strong> ${escapeHtml(orderId)}</p>
+                    <p><strong>Date:</strong> ${escapeHtml(formattedDate)}</p>
+                    <p><strong>Status:</strong> <span class="status-badge ${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span></p>
                 </div>
                 <div class="order-details-breakdown">
                     <div class="breakdown-item">
@@ -110,11 +128,18 @@ function viewOrderDetails(orderId, orderDate, status, subtotal, vat, total) {
             </div>
             <div class="modal-footer">
                 <button class="btn-secondary" onclick="closeModal('order-details-modal')">Close</button>
-                <button class="btn-primary" onclick="viewOrderReceipt('${orderId}')">View Full Receipt</button>
+                <button class="btn-primary view-receipt-btn" data-order-id="${escapeHtml(orderId)}">View Full Receipt</button>
             </div>
         </div>
     `;
-    
+
+    // Delegated rather than a second onclick="viewOrderReceipt('${orderId}')" — same
+    // reasoning as the table's action buttons above.
+    modal.addEventListener('click', function(event) {
+        const receiptBtn = event.target.closest('.view-receipt-btn');
+        if (receiptBtn) { viewOrderReceipt(receiptBtn.dataset.orderId); }
+    });
+
     document.body.appendChild(modal);
     modal.style.display = 'flex';
 }
@@ -124,9 +149,9 @@ async function viewOrderReceipt(orderId) {
     showLoadingOverlay();
 
     const User = get_localStorage('user');
-    const Password = get_localStorage('password');
+    const Token = get_localStorage('token');
     
-    if (!User || !Password) {
+    if (!User || !Token) {
         hideLoadingOverlay();
         showToast('Not authenticated', 'error');
         return;
@@ -140,7 +165,7 @@ async function viewOrderReceipt(orderId) {
             return;
         }
 
-        displayReceipt(jsonData);
+        await displayReceipt(jsonData);
     } catch (error) {
         console.error('Error loading receipt:', error);
         showToast('Error loading receipt: ' + error.message, 'error');
@@ -149,9 +174,13 @@ async function viewOrderReceipt(orderId) {
     }
 }
 
-function displayReceipt(receiptData) {
+async function displayReceipt(receiptData) {
     try {
         console.log('displayReceipt called with data:', !!receiptData);
+    // Reuses printer.js's cached config (loaded once, same "Boudica POS"/localhost:8001
+    // fallback) rather than duplicating the fetch — was hardcoded "The Curiosity Cabins",
+    // a leftover from a specific prior deployment (CODE_VERIFIED_AUDIT.md §10).
+    const printerConfig = await loadPrinterConfig();
     const modal = document.createElement('div');
     modal.className = 'modal-overlay';
     modal.id = 'receipt-modal';
@@ -165,8 +194,8 @@ function displayReceipt(receiptData) {
     let itemsHtml = '';
     items.forEach(item => {
         itemsHtml += `<tr>
-            <td>${item.description}</td>
-            <td>${item.quantity}</td>
+            <td>${escapeHtml(item.description)}</td>
+            <td>${escapeHtml(item.quantity)}</td>
             <td>£${parseFloat(item.price).toFixed(2)}</td>
             <td>£${(parseFloat(item.price) * item.quantity).toFixed(2)}</td>
         </tr>`;
@@ -180,15 +209,15 @@ function displayReceipt(receiptData) {
             </div>
             <div class="modal-body receipt-content">
                 <div class="receipt-header">
-                    <h3>The Curiosity Cabins</h3>
+                    <h3>${escapeHtml(printerConfig.storeName)}</h3>
                     <p>Professional Receipt</p>
                 </div>
                 
                 <div class="receipt-details">
-                    <p><strong>Order ID:</strong> ${receiptData.order_id}</p>
+                    <p><strong>Order ID:</strong> ${escapeHtml(receiptData.order_id)}</p>
                     <p><strong>Date:</strong> ${new Date(receiptData.order_date).toLocaleString()}</p>
-                    <p><strong>Payment Method:</strong> ${receiptData.payment_method}</p>
-                    <p><strong>Status:</strong> ${receiptData.order_status}</p>
+                    <p><strong>Payment Method:</strong> ${escapeHtml(receiptData.payment_method)}</p>
+                    <p><strong>Status:</strong> ${escapeHtml(receiptData.order_status)}</p>
                 </div>
                 
                 <table class="receipt-items">
@@ -226,12 +255,21 @@ function displayReceipt(receiptData) {
             </div>
             <div class="modal-footer">
                 <button class="btn-secondary" onclick="closeModal('receipt-modal')">Close</button>
-                <button class="btn-primary" onclick="printOrderReceipt('${receiptData.order_id}')">🖨️ Print</button>
-                <button class="btn-primary" onclick="downloadReceiptPDF('${receiptData.order_id}')">📥 PDF</button>
+                <button class="btn-primary print-receipt-btn" data-order-id="${escapeHtml(receiptData.order_id)}">🖨️ Print</button>
+                <button class="btn-primary download-receipt-btn" data-order-id="${escapeHtml(receiptData.order_id)}">📥 PDF</button>
             </div>
         </div>
     `;
-    
+
+    // Delegated rather than embedding receiptData.order_id into an inline onclick's JS
+    // string literal — same reasoning as the other action buttons in this file.
+    modal.addEventListener('click', function(event) {
+        const printBtn = event.target.closest('.print-receipt-btn');
+        if (printBtn) { printOrderReceipt(printBtn.dataset.orderId); return; }
+        const downloadBtn = event.target.closest('.download-receipt-btn');
+        if (downloadBtn) { downloadReceiptPDF(downloadBtn.dataset.orderId); }
+    });
+
     document.body.appendChild(modal);
     console.log('Modal appended to DOM. ID:', modal.id);
     console.log('Modal in DOM now?', !!document.getElementById('receipt-modal'));
@@ -276,7 +314,7 @@ function printOrderReceipt(orderId) {
                 <!DOCTYPE html>
                 <html>
                 <head>
-                    <title>Receipt - ${orderId}</title>
+                    <title>Receipt - ${escapeHtml(orderId)}</title>
                     <style>
                         body { font-family: Courier New, monospace; padding: 20px; }
                         .receipt-header { text-align: center; margin-bottom: 20px; }
@@ -306,7 +344,7 @@ function printOrderReceipt(orderId) {
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Receipt - ${orderId}</title>
+            <title>Receipt - ${escapeHtml(orderId)}</title>
             <style>
                 body { font-family: Courier New, monospace; padding: 20px; }
                 .receipt-header { text-align: center; margin-bottom: 20px; }

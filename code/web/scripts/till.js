@@ -216,11 +216,27 @@ function clearSale() {
 }
 
 let voidSaleArmTimeout = null;
+let voidSaleArmedItemCount = 0;
 
 // Requires a second tap within 3 seconds to actually void the sale — the button reverts to
-// its normal label/appearance if that window passes without a second tap.
+// its normal label/appearance if that window passes without a second tap. Also guards
+// against the sale changing *during* that window: if an item got scanned/added between the
+// first tap and the second, the second tap re-arms instead of silently voiding a sale the
+// cashier hasn't actually seen and confirmed (a mis-timed tap could otherwise wipe out an
+// item added a second earlier with no extra warning).
 function armOrConfirmVoidSale(btn) {
     if (voidSaleArmTimeout) {
+        if (currentSaleItems.length !== voidSaleArmedItemCount) {
+            clearTimeout(voidSaleArmTimeout);
+            showToast('Sale changed — tap again to confirm void.', 'info');
+            voidSaleArmedItemCount = currentSaleItems.length;
+            voidSaleArmTimeout = setTimeout(() => {
+                voidSaleArmTimeout = null;
+                btn.textContent = 'Void Sale';
+                btn.classList.remove('keypad-btn-armed');
+            }, 3000);
+            return;
+        }
         clearTimeout(voidSaleArmTimeout);
         voidSaleArmTimeout = null;
         btn.textContent = 'Void Sale';
@@ -235,6 +251,7 @@ function armOrConfirmVoidSale(btn) {
         return;
     }
 
+    voidSaleArmedItemCount = currentSaleItems.length;
     btn.textContent = 'Tap to confirm';
     btn.classList.add('keypad-btn-armed');
     voidSaleArmTimeout = setTimeout(() => {
@@ -634,10 +651,12 @@ async function loadWorkshops() {
             const dateStr = workshop.when_date.substring(0, 10);
             const price = parseFloat(workshop.price).toFixed(2);
             
-            // Create multi-line button content
+            // Create multi-line button content. workshop.title is DB-sourced — escaped
+            // before insertion (CODE_VERIFIED_AUDIT.md §3.7); dateStr/price are already
+            // known-safe (a date substring and a formatted number).
             button.innerHTML = `
                 <div class="workshop-btn-content">
-                    <div class="workshop-title">${workshop.title}</div>
+                    <div class="workshop-title">${escapeHtml(workshop.title)}</div>
                     <div class="workshop-info">
                         <span class="workshop-date">${dateStr}</span>
                         <span class="workshop-price">£${price}</span>
