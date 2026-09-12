@@ -10,6 +10,7 @@ services:
       STORE_DB_PASSWORD: ${STORE_DB_PASSWORD:-local_dev_store_password}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-AdminPassword123!}
       WEB_STORE_PASSWORD: ${WEB_STORE_PASSWORD:-web_store_pass}
+      KIOSK_PASSWORD: ${KIOSK_PASSWORD:-kiosk_service_pass}
     volumes:
       - boudica_pg_data:/var/lib/postgresql/data
     ports:

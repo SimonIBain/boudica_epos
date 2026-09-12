@@ -24,6 +24,16 @@ ON CONFLICT (username) DO UPDATE SET
     password_hash = EXCLUDED.password_hash,
     updated_at = CURRENT_TIMESTAMP;
 
+-- Read-only service account for the customer kiosk (code/kiosk/) — logs in via the
+-- normal session-token flow to call getcatalog on the customer's behalf. Lowest
+-- privilege tier; getcatalog itself is ungated (see CODE_VERIFIED_AUDIT.md §9.3's
+-- reasoning for inventoryreport — stock levels aren't the confidential figure).
+INSERT INTO store.users (username, email, password_hash, role, full_name, is_active)
+VALUES ('kiosk_user', 'kiosk@localhost', crypt('${KIOSK_PASSWORD}', gen_salt('bf')), 'operator', 'Customer Kiosk Service Account', true)
+ON CONFLICT (username) DO UPDATE SET
+    password_hash = EXCLUDED.password_hash,
+    updated_at = CURRENT_TIMESTAMP;
+
 -- A starter product + stock row so the till/store aren't completely empty on first run.
 INSERT INTO store.suppliers (supplier, telephone, emailaddress)
 VALUES ('Demo Supplier', '01234 567890', 'supplier@localhost')

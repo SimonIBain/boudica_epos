@@ -1565,9 +1565,99 @@ std::string get_stock_count(const std::string barcde, const std::string user,
     return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
 }
 
+/**
+ * Customer-facing product catalog browse/search, for the kiosk (and any other
+ * read-only storefront-style caller). Deliberately returns only fields safe to
+ * show a customer — no purchase_price, no supplier — and a coarse availability
+ * tier instead of the exact stock count.
+ */
+static inline
+std::string get_catalog(const std::string search_term, long page, long limit,
+  const std::string user, const std::string password, const std::string database) {
+    if ( page < 1 ) { page = 1; }
+    if ( limit < 1 ) { limit = 1; }
+    if ( limit > 100 ) { limit = 100; }
+    long offset = (page - 1) * limit;
+
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) {
+        return "{\"error\": \"System configuration error!\"}";
+    }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( !pgbc._isConnected ) {
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
+    }
+
+    std::string where = "";
+    std::vector<std::string> params;
+    std::string trimmed_term = search_term;
+    OmniIndex::Utils::Utils::trim(trimmed_term);
+    if ( !trimmed_term.empty() ) {
+        params.push_back("%" + trimmed_term + "%");
+        where = " WHERE p.product_description ILIKE $1 OR p.color ILIKE $1 OR p.type ILIKE $1 OR p.barcode ILIKE $1";
+    }
+
+    std::string count_sql = "SELECT COUNT(*) AS total FROM store.products AS p" + where + ";";
+    std::string count_resp = params.empty() ? pgbc.runCommand(count_sql) : pgbc.runCommandParams(count_sql, params);
+    long total = safe_stol(json_str(json_row(count_resp), "total"));
+
+    std::string sql = "SELECT p.barcode, p.product_description, p.color, p.type, p.rs_price, p.image_url, "
+        "COALESCE(s.available, 0) AS available FROM store.products AS p "
+        "LEFT JOIN store.stock AS s ON s.barcode = p.barcode" + where +
+        " ORDER BY p.product_description ASC LIMIT $" + std::to_string(params.size() + 1) +
+        " OFFSET $" + std::to_string(params.size() + 2) + ";";
+    params.push_back(std::to_string(limit));
+    params.push_back(std::to_string(offset));
+
+    std::string resp = pgbc.runCommandParams(sql, params);
+    std::string error = pgbc.getLastError();
+    pgbc.close();
+    if ( error != "" ) {
+        return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
+    }
+
+    nlohmann::json items = nlohmann::json::array();
+    for ( const auto& jItem : json_rows(resp) ) {
+        std::string barcode = json_str(jItem, "barcode");
+        // A zero-row result still comes back as one placeholder object with every
+        // field blank (same quirk as get_dashboard's, §7.3#8) — skip it rather than
+        // returning a fake "product".
+        if ( barcode.empty() ) { continue; }
+        std::string description = json_str(jItem, "product_description");
+        std::string color = json_str(jItem, "color");
+        std::string type = json_str(jItem, "type");
+        std::string price = json_str(jItem, "rs_price");
+        std::string image_url = json_str(jItem, "image_url");
+        long available = safe_stol(json_str(jItem, "available"));
+
+        std::string availability = "out_of_stock";
+        if ( available > 5 ) { availability = "in_stock"; }
+        else if ( available > 0 ) { availability = "low_stock"; }
+
+        nlohmann::json item;
+        item["barcode"] = barcode;
+        item["description"] = description;
+        item["color"] = color;
+        item["type"] = type;
+        item["price"] = safe_stod(price);
+        item["image_url"] = image_url;
+        item["availability"] = availability;
+        items.push_back(item);
+    }
+
+    nlohmann::json out;
+    out["products"] = items;
+    out["total"] = total;
+    out["page"] = page;
+    out["limit"] = limit;
+    return out.dump();
+}
+
 
 static inline
-std::string get_dashboard(const std::string user, 
+std::string get_dashboard(const std::string user,
   const std::string password, const std::string database) {
   std::string sql = "SELECT SUM(running_total) today_total  FROM store.period_sales WHERE completed = '1';";
   std::map<std::string, std::string> m_conf = get_configuration();
@@ -3092,8 +3182,23 @@ int main (int argc, char** argv) {
         }
         std::string response = get_details(barcode, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
-        return 0;               
-    }    
+        return 0;
+    }
+    else if ( command == "getcatalog" ) {
+        std::string q;
+        it = queryData.find("q");
+        if ( it != queryData.end() ) {
+            q = url_decode(it->second);
+        }
+        long page = 1, limit = 24;
+        it = queryData.find("page");
+        if ( it != queryData.end() ) { page = safe_stol(url_decode(it->second)); }
+        it = queryData.find("limit");
+        if ( it != queryData.end() ) { limit = safe_stol(url_decode(it->second)); }
+        std::string response = get_catalog(q, page, limit, json_str(jUser, "username"), password, database);
+        std::cout << response << "\n\n";
+        return 0;
+    }
     else if ( command == "quantitylookup" ) {
          std::string barcode;
         it = queryData.find("barcode");
