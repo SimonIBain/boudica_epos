@@ -21,7 +21,12 @@
         .panel { display: none; }
         .panel.active { display: block; }
 
-        #searchBox { width: 100%; padding: 14px 16px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 18px; }
+        .search-row { display: flex; gap: 8px; margin-bottom: 8px; }
+        #searchBox { flex-grow: 1; padding: 14px 16px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; }
+        #searchBtn { padding: 0 20px; border-radius: 8px; border: none; background: var(--accent); color: #fff; font-weight: 700; cursor: pointer; font-size: 15px; }
+        .search-hint { font-size: 12px; color: #888; margin: 0 0 18px; }
+        .ai-note { background: #fff8ea; border: 1px solid #f0dca0; color: #7a5c00; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
+        .searching-state { text-align: center; color: #888; padding: 40px 10px; }
 
         .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
         .product-card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
@@ -63,7 +68,12 @@
 
     <main>
         <section id="stockPanel" class="panel active">
-            <input type="text" id="searchBox" placeholder="Search for a product, colour or type...">
+            <div class="search-row">
+                <input type="text" id="searchBox" placeholder="Search, or ask a question like &quot;what would suit a craft bear?&quot;">
+                <button id="searchBtn" onclick="runSearch()">Search</button>
+            </div>
+            <p class="search-hint">Type to filter instantly, or press Search to ask Boudica AI if nothing matches.</p>
+            <div id="aiNote" class="ai-note" hidden></div>
             <div id="productGrid" class="product-grid"></div>
             <div id="loadMoreRow" hidden><button id="loadMoreBtn" onclick="loadMore()">Show more</button></div>
         </section>
@@ -149,15 +159,22 @@
             }
         }
 
+        function showAiNote(text) {
+            const note = document.getElementById('aiNote');
+            if (text) { note.textContent = 'Boudica AI: ' + text; note.hidden = false; }
+            else { note.hidden = true; }
+        }
+
         async function searchCatalog(query, page, append) {
             const grid = document.getElementById('productGrid');
+            showAiNote('');
             try {
                 const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
                 if (query) { params.set('q', query); }
                 const res = await fetch('/api/catalog?' + params.toString());
                 const data = await res.json();
                 if (data.error) {
-                    grid.innerHTML = '<div class="error-state">' + (append ? '' : '') + 'Stock information is temporarily unavailable.</div>';
+                    grid.innerHTML = '<div class="error-state">Stock information is temporarily unavailable.</div>';
                     document.getElementById('loadMoreRow').hidden = true;
                     return;
                 }
@@ -185,6 +202,46 @@
                 searchCatalog(currentQuery, 1, false);
             }, 300);
         });
+
+        document.getElementById('searchBox').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+        });
+
+        /**
+         * Explicit "help me find it" search — tries the fast catalog match first,
+         * then (server-side) falls back to asking Boudica AI to pick from real stock
+         * for a question no keyword search could ever answer. Not run on every
+         * keystroke like searchCatalog() above, since the AI fallback can take a
+         * few seconds.
+         */
+        async function runSearch() {
+            const query = document.getElementById('searchBox').value.trim();
+            if (!query) { return; }
+            clearTimeout(searchDebounce);
+            currentQuery = query;
+
+            const grid = document.getElementById('productGrid');
+            document.getElementById('loadMoreRow').hidden = true;
+            showAiNote('');
+            grid.innerHTML = '<div class="searching-state">Searching our stock...</div>';
+
+            try {
+                const res = await fetch('/api/smart-search?' + new URLSearchParams({ q: query }));
+                const data = await res.json();
+                if (data.error) {
+                    grid.innerHTML = '<div class="error-state">Search is temporarily unavailable.</div>';
+                    return;
+                }
+                if (data.mode === 'none' || data.products.length === 0) {
+                    grid.innerHTML = '<div class="empty-state">No matches — try rephrasing, or ask in "Ask Boudica AI" instead.</div>';
+                    return;
+                }
+                if (data.mode === 'ai' && data.note) { showAiNote(data.note); }
+                renderProducts(data.products, false);
+            } catch (err) {
+                grid.innerHTML = '<div class="error-state">Search is temporarily unavailable.</div>';
+            }
+        }
 
         function appendChatLine(who, text) {
             const log = document.getElementById('chatLog');

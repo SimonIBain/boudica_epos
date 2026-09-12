@@ -217,6 +217,128 @@ app.get('/api/catalog', async (req, res) => {
     }
 });
 
+// ---- AI-assisted "smart search": for questions a keyword search can't answer     ----
+// ---- ("what would suit a craft teddy bear?"), ask Boudica to pick from real      ----
+// ---- stock instead of guessing. Layered on top of the fast search, not          ----
+// ---- replacing it — only used when the fast path finds nothing.                 ----
+
+const MAX_SMART_SEARCH_CANDIDATES = 150;
+
+/**
+ * Pulls the first page(s) of the full catalog as a candidate pool for the AI to
+ * choose from. A small shop's whole catalog fits in one or two pages; a larger
+ * one is only partially represented — a known limitation, not chased further
+ * here (flagged in project_boudica_kiosk_review memory).
+ */
+async function fetchCandidatePool(maxItems) {
+    const pageSize = 100;
+    const first = await callPosCatalog('', 1, pageSize);
+    if (first.error || !Array.isArray(first.products)) { return []; }
+    const products = first.products.slice();
+    const total = Math.min(first.total || products.length, maxItems);
+    for (let page = 2; products.length < total && products.length < maxItems; page++) {
+        const next = await callPosCatalog('', page, pageSize);
+        if (next.error || !Array.isArray(next.products) || next.products.length === 0) { break; }
+        products.push(...next.products);
+    }
+    return products.slice(0, maxItems);
+}
+
+/** Tolerates the model wrapping its JSON in prose or a markdown code fence. */
+function parseLooseJsonObject(text) {
+    if (typeof text !== 'string') { return null; }
+    try { return JSON.parse(text); } catch { /* fall through */ }
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) {
+        try { return JSON.parse(match[0]); } catch { /* give up below */ }
+    }
+    return null;
+}
+
+/**
+ * Asks Boudica to pick relevant barcodes out of a real candidate list, given the
+ * customer's own words. Sent as a file attachment, not inline in the message —
+ * inline embedded JSON gets ignored/misread here (confirmed live: the model
+ * claimed "the customer's question is missing" with the exact same data inline),
+ * the same "doesn't trust embedded text" issue CODE_VERIFIED_AUDIT.md §7.7 hit
+ * for stockanalysis/salesanalysis, fixed there the same way. use_rag is off and
+ * "No Rag. No Memory." is prepended (matching call_boudica_with_data() in
+ * main.cpp) — this is a structured internal pick-from-this-list task, not the
+ * customer-facing grounded chat, so it shouldn't be distracted by RAG documents.
+ */
+async function askBoudicaToPickProducts(query, candidates) {
+    if (!BOUDICA_API_KEY || candidates.length === 0) { return null; }
+
+    const compact = candidates.map(p => ({
+        barcode: p.barcode, description: p.description, color: p.color,
+        type: p.type, price: p.price, availability: p.availability
+    }));
+
+    const form = new FormData();
+    form.append('message',
+        'No Rag. No Memory. A customer asked: "' + query + '". The attached file lists our ' +
+        'current stock as a JSON array (barcode, description, color, type, price, availability). ' +
+        'Pick which barcodes from that file would help answer the customer, most relevant first, ' +
+        'up to 8. Reply with ONLY a JSON object shaped exactly like ' +
+        '{"items": ["barcode1", "barcode2"], "note": "a short one-sentence explanation"} ' +
+        'and nothing else before or after it. Use an empty items array if nothing fits.'
+    );
+    form.append('use_rag', 'false');
+    // Generous budget: the model's chain-of-thought (hidden from the customer, but
+    // still counted against max_tokens) can run long when reasoning over a dozen-plus
+    // candidates — too low a cap truncates mid-JSON before the final answer even
+    // starts (confirmed live: 400 cut off at `{"items": ["`  with 7 candidates).
+    form.append('max_tokens', '1500');
+    form.append('file', new Blob([JSON.stringify(compact)], { type: 'application/json' }), 'stock_data.json');
+
+    const response = await fetch(BOUDICA_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${BOUDICA_API_KEY}` },
+        body: form
+    });
+    if (!response.ok) { throw new Error(`Boudica returned ${response.status}`); }
+    const data = await response.json();
+    const parsed = parseLooseJsonObject(data.response);
+    if (!parsed || !Array.isArray(parsed.items)) {
+        console.warn('Smart search: could not parse a product list out of Boudica\'s reply:', data.response);
+        return null;
+    }
+
+    const byBarcode = new Map(candidates.map(p => [p.barcode, p]));
+    const products = parsed.items.map(b => byBarcode.get(b)).filter(Boolean).slice(0, 8);
+    return { products, note: typeof parsed.note === 'string' ? parsed.note : '' };
+}
+
+app.get('/api/smart-search', async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!q) {
+        return res.status(400).json({ error: 'A search query is required.' });
+    }
+
+    try {
+        // Fast path: the real getcatalog search (AND-across-words, OR-across-fields —
+        // see CODE_VERIFIED_AUDIT.md §11) already handles most "do you have X" questions
+        // and structured queries like "blue aran 4 ply" with no AI cost or latency.
+        const direct = await callPosCatalog(q, 1, 12);
+        if (!direct.error && Array.isArray(direct.products) && direct.products.length > 0) {
+            return res.json({ mode: 'direct', products: direct.products, note: '' });
+        }
+
+        // Fallback: a genuinely conceptual question ("what would suit a craft teddy
+        // bear?") that no keyword match will ever answer — ask Boudica to reason over
+        // the real candidate pool instead.
+        const candidates = await fetchCandidatePool(MAX_SMART_SEARCH_CANDIDATES);
+        const ai = await askBoudicaToPickProducts(q, candidates);
+        if (ai && ai.products.length > 0) {
+            return res.json({ mode: 'ai', products: ai.products, note: ai.note });
+        }
+        return res.json({ mode: 'none', products: [], note: '' });
+    } catch (err) {
+        console.error('Smart search failed:', err.message);
+        res.status(503).json({ error: 'Search is temporarily unavailable.' });
+    }
+});
+
 // ---- Boudica AI chat, grounded in real stock matches for the customer's question. ----
 
 const CHAT_STOPWORDS = new Set([

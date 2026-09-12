@@ -1595,8 +1595,27 @@ std::string get_catalog(const std::string search_term, long page, long limit,
     std::string trimmed_term = search_term;
     OmniIndex::Utils::Utils::trim(trimmed_term);
     if ( !trimmed_term.empty() ) {
-        params.push_back("%" + trimmed_term + "%");
-        where = " WHERE p.product_description ILIKE $1 OR p.color ILIKE $1 OR p.type ILIKE $1 OR p.barcode ILIKE $1";
+        // Each word must match *some* field (AND across words, OR across fields) —
+        // "blue aran" finds a product whose color is Blue and whose description
+        // contains "Aran", even though neither single column contains both words.
+        // A plain single-substring ILIKE (the original implementation) could never
+        // match that, since color/type/description are separate columns.
+        std::vector<std::string> words = OmniIndex::Utils::Utils::split(trimmed_term, " ");
+        std::vector<std::string> clauses;
+        for ( const auto& word : words ) {
+            if ( word.empty() ) { continue; }
+            params.push_back("%" + word + "%");
+            std::string n = std::to_string(params.size());
+            clauses.push_back("(p.product_description ILIKE $" + n + " OR p.color ILIKE $" + n +
+                " OR p.type ILIKE $" + n + " OR p.barcode ILIKE $" + n + ")");
+        }
+        if ( !clauses.empty() ) {
+            where = " WHERE ";
+            for ( size_t i = 0; i < clauses.size(); ++i ) {
+                if ( i > 0 ) { where += " AND "; }
+                where += clauses[i];
+            }
+        }
     }
 
     std::string count_sql = "SELECT COUNT(*) AS total FROM store.products AS p" + where + ";";
