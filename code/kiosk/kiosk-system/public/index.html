@@ -3,104 +3,261 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive Customer Kiosk</title>
-    <!-- Anchor tag styling payload loaded dynamically over local node execution loops -->
-    <style id="compiled-kiosk-styles"></style>
+    <title>Store Kiosk</title>
+    <style>
+        :root { --primary: #25214e; --accent: #b8860b; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #f4f4f7; color: #222; }
+        header { background: var(--primary); color: #fff; padding: 18px 20px; display: flex; align-items: center; gap: 14px; }
+        header img { height: 48px; width: 48px; object-fit: contain; border-radius: 8px; background: #fff; padding: 4px; }
+        header h1 { margin: 0; font-size: 22px; }
+        header p { margin: 2px 0 0; font-size: 13px; opacity: 0.85; }
+
+        nav { display: flex; background: #fff; border-bottom: 1px solid #ddd; }
+        nav button { flex: 1; padding: 16px; font-size: 16px; font-weight: 600; border: none; background: none; cursor: pointer; color: #666; border-bottom: 3px solid transparent; }
+        nav button.active { color: var(--primary); border-bottom-color: var(--accent); }
+
+        main { max-width: 900px; margin: 0 auto; padding: 20px 16px 60px; }
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        #searchBox { width: 100%; padding: 14px 16px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 18px; }
+
+        .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+        .product-card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+        .product-card h3 { margin: 0 0 6px; font-size: 15px; }
+        .product-card .meta { font-size: 12px; color: #777; margin-bottom: 10px; }
+        .product-card .price { font-size: 18px; font-weight: 700; color: var(--primary); }
+        .badge { display: inline-block; margin-top: 8px; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+        .badge.in_stock { background: #e3f6e8; color: #1a7f37; }
+        .badge.low_stock { background: #fff4e0; color: #a5680a; }
+        .badge.out_of_stock { background: #fbe9e9; color: #b3261e; }
+
+        #loadMoreRow { text-align: center; margin-top: 20px; }
+        #loadMoreBtn { padding: 10px 22px; border-radius: 6px; border: 1px solid var(--primary); background: #fff; color: var(--primary); font-weight: 600; cursor: pointer; }
+        .empty-state, .error-state { text-align: center; color: #888; padding: 40px 10px; }
+
+        .ai-box { background: #fff; border-radius: 12px; padding: 20px; }
+        .chat-log { min-height: 320px; max-height: 55vh; overflow-y: auto; background: #f8f8fb; border: 1px solid #e5e5ea; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+        .chat-line { margin-bottom: 12px; line-height: 1.4; }
+        .chat-line b { color: var(--primary); }
+        .chat-input-row { display: flex; gap: 10px; }
+        #chatInput { flex-grow: 1; padding: 12px 14px; border-radius: 8px; border: 1px solid #ccc; font-size: 15px; }
+        #chatSubmit { padding: 12px 24px; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; }
+    </style>
 </head>
 <body>
 
-    <!-- Main entry mount container -->
-    <div id="compiled-kiosk-view"></div>
+    <header>
+        <img id="storeLogo" alt="" hidden>
+        <div>
+            <h1 id="storeName">Our Store</h1>
+            <p id="storeTagline" hidden></p>
+        </div>
+    </header>
+
+    <nav>
+        <button id="tabStockBtn" class="active" onclick="showPanel('stock')">Browse Stock</button>
+        <button id="tabChatBtn" onclick="showPanel('chat')">Ask Boudica AI</button>
+    </nav>
+
+    <main>
+        <section id="stockPanel" class="panel active">
+            <input type="text" id="searchBox" placeholder="Search for a product, colour or type...">
+            <div id="productGrid" class="product-grid"></div>
+            <div id="loadMoreRow" hidden><button id="loadMoreBtn" onclick="loadMore()">Show more</button></div>
+        </section>
+
+        <section id="chatPanel" class="panel">
+            <div class="ai-box">
+                <div id="chatLog" class="chat-log"></div>
+                <div class="chat-input-row">
+                    <input type="text" id="chatInput" placeholder="Ask a question...">
+                    <button id="chatSubmit" onclick="sendChat()">Send</button>
+                </div>
+            </div>
+        </section>
+    </main>
 
     <script>
-        // Pull layout schema from central disk allocation profiles immediately
-        fetch('/api/load-layout')
-            .then(res => res.json())
-            .then(data => {
-                document.getElementById('compiled-kiosk-view').innerHTML = data.html || '';
-                document.getElementById('compiled-kiosk-styles').innerHTML = data.css || '';
-                
-                // Initialize events to intercept click processing vectors
-                bindCustomerInterfaceEvents();
-            });
+        let currentPage = 1;
+        let currentQuery = '';
+        let currentTotal = 0;
+        let loadedCount = 0;
+        const PAGE_SIZE = 24;
 
-        function bindCustomerInterfaceEvents() {
-            // Handle delegation loops to block customers from changing layouts 
-            document.body.addEventListener('click', async function(e) {
-                if (e.target && e.target.classList.contains('chat-submit-btn')) {
-                    const parentContainer = e.target.closest('.ai-box');
-                    const inputField = parentContainer.querySelector('.chat-input');
-                    const conversationLogs = parentContainer.querySelector('.chat-log');
-                    const textContent = inputField.value.trim();
-
-                    if (!textContent) return;
-
-                    // Immediately write local text prompt directly into container view panel
-                    const youLine = document.createElement('div');
-                    youLine.style.marginTop = '10px';
-                    youLine.innerHTML = '<b>You:</b> ';
-                    youLine.appendChild(document.createTextNode(textContent));
-                    conversationLogs.appendChild(youLine);
-                    inputField.value = ''; // Clean prompt interface inputs
-                    conversationLogs.scrollTop = conversationLogs.scrollHeight;
-
-                    // Set identifier mapping coordinates for incoming streaming blocks
-                    const streamingMarkerId = 'chunk-output-' + Date.now();
-                    const aiLine = document.createElement('div');
-                    aiLine.style.marginTop = '10px';
-                    aiLine.innerHTML = '<b>AI:</b> <span><i>Processing network calculations...</i></span>';
-                    const UIOutputSpan = aiLine.querySelector('span');
-                    UIOutputSpan.id = streamingMarkerId;
-                    conversationLogs.appendChild(aiLine);
-                    conversationLogs.scrollTop = conversationLogs.scrollHeight;
-
-                    try {
-                        const localStreamStream = await fetch('/boudica/api/chat', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ prompt: textContent })
-                        });
-
-                        const payloadReader = localStreamStream.body.getReader();
-                        const stringDecoder = new TextDecoder();
-                        let responseProcessingBuffer = '';
-
-                        while (true) {
-                            const { done, value } = await payloadReader.read();
-                            if (done) break;
-
-                            responseProcessingBuffer += stringDecoder.decode(value, { stream: true });
-                            const logPackets = responseProcessingBuffer.split('\n');
-                            responseProcessingBuffer = logPackets.pop(); // Hold onto partial line buffer data
-
-                            for (const stringifiedPacket of logPackets) {
-                                if (!stringifiedPacket.trim()) continue;
-
-                                try {
-                                    const verifiedJson = JSON.parse(stringifiedPacket.trim());
-
-                                    // Catching alternative raw thinking steps to let customers know the engine is working
-                                    if (verifiedJson.type === 'thinking_token') {
-                                        UIOutputSpan.innerHTML = '<i>Searching local knowledge graph...</i>';
-                                    }
-
-                                    // Intercepting Boudica's final structural response block explicitly
-                                    if (verifiedJson.response) {
-                                        UIOutputSpan.innerText = verifiedJson.response.trim();
-                                    }
-                                } catch (innerParsingError) {
-                                    // Protect the streaming loop context from raw fragmented chunk failures
-                                }
-                            }
-                            conversationLogs.scrollTop = conversationLogs.scrollHeight;
-                        }
-
-                    } catch (connectionError) {
-                        UIOutputSpan.innerHTML = '<span style="color:#d9534f;">Connection to sovereign network nodes lost.</span>';
-                    }
-                }
-            });
+        function showPanel(name) {
+            document.getElementById('stockPanel').classList.toggle('active', name === 'stock');
+            document.getElementById('chatPanel').classList.toggle('active', name === 'chat');
+            document.getElementById('tabStockBtn').classList.toggle('active', name === 'stock');
+            document.getElementById('tabChatBtn').classList.toggle('active', name === 'chat');
         }
+
+        async function loadBranding() {
+            try {
+                const res = await fetch('/api/branding');
+                const b = await res.json();
+                document.getElementById('storeName').textContent = b.storeName || 'Our Store';
+                document.documentElement.style.setProperty('--primary', b.primaryColor || '#25214e');
+                document.documentElement.style.setProperty('--accent', b.accentColor || '#b8860b');
+
+                const taglineEl = document.getElementById('storeTagline');
+                if (b.tagline) { taglineEl.textContent = b.tagline; taglineEl.hidden = false; }
+
+                const logoEl = document.getElementById('storeLogo');
+                if (b.logoUrl) { logoEl.src = b.logoUrl; logoEl.hidden = false; }
+
+                if (b.welcomeMessage) {
+                    appendChatLine('AI', b.welcomeMessage);
+                }
+            } catch (err) {
+                console.error('Branding load failed:', err);
+            }
+        }
+
+        function renderProducts(products, append) {
+            const grid = document.getElementById('productGrid');
+            if (!append) { grid.innerHTML = ''; }
+            if (products.length === 0 && !append) {
+                grid.innerHTML = '<div class="empty-state">No products found.</div>';
+                return;
+            }
+            for (const p of products) {
+                const card = document.createElement('div');
+                card.className = 'product-card';
+
+                const title = document.createElement('h3');
+                title.textContent = p.description;
+                card.appendChild(title);
+
+                const meta = document.createElement('div');
+                meta.className = 'meta';
+                meta.textContent = [p.color, p.type].filter(Boolean).join(' · ');
+                card.appendChild(meta);
+
+                const price = document.createElement('div');
+                price.className = 'price';
+                price.textContent = '£' + Number(p.price).toFixed(2);
+                card.appendChild(price);
+
+                const badge = document.createElement('span');
+                badge.className = 'badge ' + p.availability;
+                badge.textContent = p.availability.replace('_', ' ');
+                card.appendChild(badge);
+
+                grid.appendChild(card);
+            }
+        }
+
+        async function searchCatalog(query, page, append) {
+            const grid = document.getElementById('productGrid');
+            try {
+                const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+                if (query) { params.set('q', query); }
+                const res = await fetch('/api/catalog?' + params.toString());
+                const data = await res.json();
+                if (data.error) {
+                    grid.innerHTML = '<div class="error-state">' + (append ? '' : '') + 'Stock information is temporarily unavailable.</div>';
+                    document.getElementById('loadMoreRow').hidden = true;
+                    return;
+                }
+                currentTotal = data.total || 0;
+                loadedCount = append ? loadedCount + data.products.length : data.products.length;
+                renderProducts(data.products, append);
+                document.getElementById('loadMoreRow').hidden = loadedCount >= currentTotal;
+            } catch (err) {
+                grid.innerHTML = '<div class="error-state">Stock information is temporarily unavailable.</div>';
+                document.getElementById('loadMoreRow').hidden = true;
+            }
+        }
+
+        function loadMore() {
+            currentPage += 1;
+            searchCatalog(currentQuery, currentPage, true);
+        }
+
+        let searchDebounce;
+        document.getElementById('searchBox').addEventListener('input', (e) => {
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(() => {
+                currentQuery = e.target.value.trim();
+                currentPage = 1;
+                searchCatalog(currentQuery, 1, false);
+            }, 300);
+        });
+
+        function appendChatLine(who, text) {
+            const log = document.getElementById('chatLog');
+            const line = document.createElement('div');
+            line.className = 'chat-line';
+            const label = document.createElement('b');
+            label.textContent = who + ': ';
+            line.appendChild(label);
+            line.appendChild(document.createTextNode(text));
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
+            return line;
+        }
+
+        async function sendChat() {
+            const input = document.getElementById('chatInput');
+            const text = input.value.trim();
+            if (!text) return;
+            input.value = '';
+
+            appendChatLine('You', text);
+            const aiLine = appendChatLine('AI', '');
+            const aiSpan = document.createElement('span');
+            aiSpan.innerHTML = '<i>Thinking...</i>';
+            aiLine.appendChild(aiSpan);
+            document.getElementById('chatLog').scrollTop = document.getElementById('chatLog').scrollHeight;
+
+            try {
+                const response = await fetch('/boudica/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: text })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        try {
+                            const packet = JSON.parse(line.trim());
+                            if (packet.type === 'thinking_token') {
+                                aiSpan.innerHTML = '<i>Searching store knowledge...</i>';
+                            }
+                            if (packet.response) {
+                                aiSpan.textContent = packet.response.trim();
+                            }
+                            if (packet.error) {
+                                aiSpan.textContent = "Sorry, I couldn't answer that just now.";
+                            }
+                        } catch { /* ignore partial/fragmented chunks */ }
+                    }
+                    document.getElementById('chatLog').scrollTop = document.getElementById('chatLog').scrollHeight;
+                }
+            } catch (err) {
+                aiSpan.textContent = 'Connection lost — please try again.';
+            }
+        }
+
+        document.getElementById('chatInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendChat();
+        });
+
+        loadBranding();
+        searchCatalog('', 1, false);
     </script>
 </body>
 </html>

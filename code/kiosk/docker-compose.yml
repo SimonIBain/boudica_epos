@@ -8,7 +8,9 @@ services:
       dockerfile: Dockerfile
     container_name: boudica-kiosk-ui
     ports:
-      - "3000:3000"
+      # Host port 3000 is permanently occupied on this box by Gitea
+      # (see reference_boudica_pos_git.md) — mapped to 3001 instead.
+      - "${KIOSK_HOST_PORT:-3001}:3000"
     volumes:
       - ./kiosk-system/public/storage:/usr/src/app/public/storage
     environment:
@@ -25,8 +27,15 @@ services:
       # the shop's own Boudica account, not a developer's personal one.
       - BOUDICA_USER_ID=${BOUDICA_USER_ID:-boudica-kiosk}
       - BOUDICA_USER_EMAIL=${BOUDICA_USER_EMAIL:-kiosk@localhost}
-      # Required for the layout editor (admin.html) and publish endpoint —
-      # both stay disabled (503) until this is set. No default, on purpose.
+      # Required for the branding editor (admin.html) — stays disabled (503)
+      # until this is set. No default, on purpose.
       - KIOSK_ADMIN_USER=${KIOSK_ADMIN_USER:-admin}
       - KIOSK_ADMIN_PASSWORD=${KIOSK_ADMIN_PASSWORD:-}
+      # The boudica_pos backend this kiosk reads live stock/price data from —
+      # same host, reached via the frontend's published port (see docker-compose.yml
+      # at the project root). POS_KIOSK_PASSWORD must match the `kiosk_user`
+      # service account seeded there (docker/sql/02-seed-users.sql.template).
+      - POS_API_BASE=${POS_API_BASE:-http://192.168.0.131:8080}
+      - POS_KIOSK_USERNAME=${POS_KIOSK_USERNAME:-kiosk_user}
+      - POS_KIOSK_PASSWORD=${POS_KIOSK_PASSWORD:-}
     restart: unless-stopped

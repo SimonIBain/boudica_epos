@@ -2,95 +2,132 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Kiosk Admin Studio</title>
-    <!-- Core External Visual Framework Libraries -->
-    <link rel="stylesheet" href="https://unpkg.com/grapesjs@0.21.13/dist/css/grapes.min.css">
-    <script src="https://unpkg.com/grapesjs@0.21.13/dist/grapes.min.js"></script>
-    <script src="https://unpkg.com/grapesjs-preset-webpage@1.0.3/dist/index.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kiosk Branding</title>
     <style>
-        body, html { margin: 0; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; }
-        #top-bar { position: absolute; top: 0; left: 0; right: 0; height: 50px; background: #2c3e50; color: white; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; z-index: 999; }
-        #gjs { top: 50px; height: calc(100% - 50px); }
-        .btn { background: #27ae60; color: white; border: none; padding: 8px 15px; font-weight: bold; cursor: pointer; border-radius: 4px; }
-        .btn:hover { background: #219a52; }
-        select { padding: 6px; border-radius: 4px; border: none; font-size: 14px; margin-left: 10px; background: white; color: #333; }
+        :root { --primary: #25214e; --accent: #b8860b; }
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: system-ui, sans-serif; background: #f4f4f7; color: #222; }
+        header { background: var(--primary); color: #fff; padding: 20px 24px; }
+        header h1 { margin: 0; font-size: 20px; }
+        header p { margin: 4px 0 0; opacity: 0.85; font-size: 14px; }
+        main { max-width: 640px; margin: 0 auto; padding: 24px 16px 64px; }
+        .card { background: #fff; border-radius: 10px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 20px; }
+        label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 14px; }
+        .hint { font-weight: 400; color: #666; font-size: 12px; margin: -4px 0 8px; }
+        input[type=text], textarea { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 15px; font-family: inherit; margin-bottom: 18px; }
+        textarea { resize: vertical; min-height: 70px; }
+        .color-row { display: flex; gap: 24px; margin-bottom: 18px; flex-wrap: wrap; }
+        .color-field { display: flex; align-items: center; gap: 10px; }
+        input[type=color] { width: 44px; height: 36px; padding: 0; border: 1px solid #ccc; border-radius: 6px; cursor: pointer; }
+        .logo-row { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; flex-wrap: wrap; }
+        .logo-preview { width: 64px; height: 64px; border-radius: 8px; border: 1px solid #ddd; object-fit: contain; background: #fafafa; }
+        button { background: var(--accent); color: #fff; border: none; padding: 12px 22px; border-radius: 6px; font-weight: 700; font-size: 15px; cursor: pointer; }
+        button:hover { filter: brightness(0.95); }
+        button.secondary { background: #eee; color: #333; padding: 8px 14px; font-size: 13px; }
+        #status { margin-top: 14px; font-size: 14px; }
+        #status.ok { color: #1a7f37; }
+        #status.err { color: #c0392b; }
+        a.view-link { color: var(--primary); font-size: 13px; }
     </style>
 </head>
 <body>
+    <header>
+        <h1>Kiosk Branding</h1>
+        <p>No web design needed — set your logo, colours and welcome message below.</p>
+    </header>
+    <main>
+        <div class="card">
+            <label for="storeName">Store name</label>
+            <input type="text" id="storeName" maxlength="80">
 
-    <div id="top-bar">
-        <div>
-            <label><b>Kiosk Style Presets:</b></label>
-            <select id="theme-selector" onchange="applyPredefinedTheme()">
-                <option value="modern-dark">Modern Dark Mode</option>
-                <option value="clean-light">Clean Corporate Light</option>
-                <option value="eco-green">Eco Retail Green</option>
-            </select>
+            <label for="tagline">Tagline <span class="hint">(optional, shown under the store name)</span></label>
+            <input type="text" id="tagline" maxlength="140">
+
+            <label>Logo</label>
+            <div class="logo-row">
+                <img id="logoPreview" class="logo-preview" alt="Logo preview">
+                <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/svg+xml">
+            </div>
+            <p class="hint">PNG, JPEG, WebP or SVG, up to 2MB.</p>
+
+            <label>Colours</label>
+            <div class="color-row">
+                <div class="color-field">
+                    <input type="color" id="primaryColor">
+                    <span>Primary (header, buttons)</span>
+                </div>
+                <div class="color-field">
+                    <input type="color" id="accentColor">
+                    <span>Accent (highlights)</span>
+                </div>
+            </div>
+
+            <label for="welcomeMessage">Boudica AI welcome message</label>
+            <textarea id="welcomeMessage" maxlength="300"></textarea>
+
+            <button onclick="saveBranding()">Save Changes</button>
+            <div id="status"></div>
         </div>
-        <button class="btn" onclick="saveKioskLayout()">Save & Publish Layout</button>
-    </div>
-
-    <!-- The root anchor point where GrapesJS boots -->
-    <div id="gjs"></div>
+        <a class="view-link" href="/" target="_blank">View the public kiosk page &rarr;</a>
+    </main>
 
     <script>
-        // Initialize the drag-and-drop workspace layout preset
-        const editor = grapesjs.init({
-            container: '#gjs',
-            fromElement: true,
-            height: '100%',
-            storageManager: false, // Override internal cache database, run via native Node server 
-            plugins: ['gjs-preset-webpage']
-        });
-
-        // Dictionary containing structural styling properties applied directly across the frame components
-        const styleThemes = {
-            'modern-dark': `.kiosk-body { background-color: #121212; color: #ffffff; min-height: 100vh; transition: all 0.3s; }\n.ai-box { background: #1e1e1e; border: 1px solid #333; color: #fff; padding: 25px; border-radius: 12px; }\n.chat-log { background: #252525; border: 1px solid #444; height: 300px; padding: 15px; border-radius: 8px; overflow-y: auto; }`,
-            'clean-light': `.kiosk-body { background-color: #f8f9fa; color: #212529; min-height: 100vh; transition: all 0.3s; }\n.ai-box { background: #ffffff; border: 1px solid #dee2e6; color: #212529; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }\n.chat-log { background: #f1f3f5; border: 1px solid #ced4da; height: 300px; padding: 15px; border-radius: 8px; overflow-y: auto; }`,
-            'eco-green': `.kiosk-body { background-color: #f4f7f5; color: #2c3e50; min-height: 100vh; transition: all 0.3s; }\n.ai-box { background: #ffffff; border: 2px solid #27ae60; color: #2c3e50; padding: 25px; border-radius: 12px; }\n.chat-log { background: #e8f5e9; border: 1px solid #c8e6c9; height: 300px; padding: 15px; border-radius: 8px; overflow-y: auto; }`
-        };
-
-        function applyPredefinedTheme() {
-            const chosen = document.getElementById('theme-selector').value;
-            editor.setStyle(styleThemes[chosen]);
+        async function loadBranding() {
+            const res = await fetch('/api/branding');
+            const b = await res.json();
+            document.getElementById('storeName').value = b.storeName || '';
+            document.getElementById('tagline').value = b.tagline || '';
+            document.getElementById('primaryColor').value = b.primaryColor || '#25214e';
+            document.getElementById('accentColor').value = b.accentColor || '#b8860b';
+            document.getElementById('welcomeMessage').value = b.welcomeMessage || '';
+            const preview = document.getElementById('logoPreview');
+            preview.src = b.logoUrl || '';
+            preview.style.visibility = b.logoUrl ? 'visible' : 'hidden';
         }
 
-        // Define a custom, immutable UI component container mapping to the Boudica API
-        editor.BlockManager.add('boudica-chat-block', {
-            label: '<b>Boudica Chat Element</b>',
-            content: `<div class="kiosk-body">
-                        <div class="ai-box" style="max-width:550px; margin: 40px auto;">
-                            <h3 style="margin-top:0; font-size: 22px;">Sovereign AI Terminal</h3>
-                            <div class="chat-log">
-                                <div style="color: #888; font-style: italic;">Ask questions regarding inventory stock levels, store locations, or device service packages...</div>
-                            </div>
-                            <div style="display:flex; gap:10px; margin-top:15px;">
-                                <input type="text" class="chat-input" placeholder="Query model..." style="flex-grow:1; padding:12px; border-radius:6px; border:1px solid #ccc; font-size:15px;">
-                                <button class="chat-submit-btn" style="padding:12px 24px; background:#2980b9; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">Send</button>
-                            </div>
-                        </div>
-                      </div>`,
-            category: 'Store Modules'
-        });
-
-        // Pull and initialize canvas elements on initial execution
-        fetch('/api/load-layout')
-            .then(res => res.json())
-            .then(data => {
-                if(data.html) editor.setComponents(data.html);
-                if(data.css) editor.setStyle(data.css);
-            });
-
-        function saveKioskLayout() {
-            fetch('/api/save-layout', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ html: editor.getHtml(), css: editor.getCss() })
-            })
-            .then(res => res.json())
-            .then(res => alert(res.message))
-            .catch(() => alert('Failed saving canvas adjustments.'));
+        function setStatus(message, ok) {
+            const el = document.getElementById('status');
+            el.textContent = message;
+            el.className = ok ? 'ok' : 'err';
         }
+
+        async function saveBranding() {
+            const payload = {
+                storeName: document.getElementById('storeName').value,
+                tagline: document.getElementById('tagline').value,
+                primaryColor: document.getElementById('primaryColor').value,
+                accentColor: document.getElementById('accentColor').value,
+                welcomeMessage: document.getElementById('welcomeMessage').value
+            };
+
+            try {
+                const res = await fetch('/api/branding', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error('Save failed (' + res.status + ')');
+
+                const logoFile = document.getElementById('logoFile').files[0];
+                if (logoFile) {
+                    const formData = new FormData();
+                    formData.append('logo', logoFile);
+                    const logoRes = await fetch('/api/branding/logo', { method: 'POST', body: formData });
+                    if (!logoRes.ok) {
+                        const errBody = await logoRes.json().catch(() => ({}));
+                        throw new Error(errBody.message || 'Logo upload failed');
+                    }
+                }
+
+                setStatus('Saved. Reload the public kiosk page to see the changes.', true);
+                await loadBranding();
+            } catch (err) {
+                setStatus(err.message, false);
+            }
+        }
+
+        loadBranding();
     </script>
 </body>
 </html>
