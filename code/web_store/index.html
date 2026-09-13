@@ -172,12 +172,32 @@
                 <h2>Request a Special Order</h2>
                 <form id="special-order-form">
                     <div class="form-group">
+                        <label for="special-order-name">Your Name</label>
+                        <input type="text" id="special-order-name" name="name" required>
+                    </div>
+                    <div class="form-group">
                         <label for="special-order-email">Your Email Address</label>
                         <input type="email" id="special-order-email" name="email" required>
                     </div>
                     <div class="form-group">
-                        <label for="special-order-details">Details of what is to be ordered</label>
-                        <textarea id="special-order-details" name="details" rows="5" required></textarea>
+                        <label for="special-order-address">Delivery/Collection Address (optional)</label>
+                        <textarea id="special-order-address" name="address" rows="2"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="special-order-products">Details of what is to be ordered</label>
+                        <textarea id="special-order-products" name="products" rows="5" required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="special-order-total">Total Price (£)</label>
+                        <input type="number" id="special-order-total" name="total" min="0" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="special-order-deposit">Deposit (£)</label>
+                        <input type="number" id="special-order-deposit" name="deposit" min="0" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="special-order-due-date">Due Date (optional)</label>
+                        <input type="date" id="special-order-due-date" name="due_date">
                     </div>
                     <div class="form-buttons">
                         <button type="submit" class="btn">Submit Request</button>

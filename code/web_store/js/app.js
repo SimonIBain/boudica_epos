@@ -1,6 +1,6 @@
 import Toast from './toast.js';
 import Data from './data.js';
-import { escapeHtml } from './session.js';
+import { apiCall, escapeHtml } from './session.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
     // --- Product Data ---
@@ -309,12 +309,43 @@ document.addEventListener('DOMContentLoaded', async () => {
         button.addEventListener('click', () => closeModal(button.closest('.modal-overlay')));
     });
 
-    specialOrderForm?.addEventListener('submit', (e) => {
+    specialOrderForm?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        // In a real app, you'd send this data to a server
-        console.log('Special Order Request:', { email: e.target.email.value, details: e.target.details.value });
+        const form = e.target;
+        const name = form.name.value.trim();
+        const email = form.email.value.trim();
+        const address = form.address.value.trim();
+        const products = form.products.value.trim();
+        const total = parseFloat(form.total.value);
+        const deposit = parseFloat(form.deposit.value);
+        const dueDate = form.due_date.value;
+
+        if (Number.isNaN(total) || Number.isNaN(deposit) || deposit > total) {
+            toast.showToast('The deposit cannot be greater than the total price.', 'error');
+            return;
+        }
+
+        // addspecialorder has no email column — fold it into the address field
+        // so the shop still has a way to contact the customer about the order.
+        const addressWithEmail = address ? `${address}\nEmail: ${email}` : `Email: ${email}`;
+
+        const data = await apiCall('addspecialorder', {
+            order_number: 'SO-' + Date.now(),
+            name,
+            address: addressWithEmail,
+            products,
+            total: total.toString(),
+            deposit: deposit.toString(),
+            due_date: dueDate
+        });
+
+        if (data.error) {
+            toast.showToast(data.error, 'error');
+            return;
+        }
+
         toast.showToast('Your special order request has been sent!', 'success');
-        e.target.reset();
+        form.reset();
         closeModal(specialOrderModal);
     });
 
