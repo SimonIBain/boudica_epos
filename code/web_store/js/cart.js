@@ -248,7 +248,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Exposing email sending logic or API keys in the frontend is a security risk.
 
         const receiptBody = `
-Thank you for your purchase from The Curiosity Cabins!
+Thank you for your purchase from Chester House Crafting!
 
 Order Summary:
 ${cart.map(item => `- ${item.name} (x${item.quantity}): £${(item.price * item.quantity).toFixed(2)}`).join('\n')}
@@ -261,7 +261,7 @@ We've sent this confirmation to ${email}.
 
         console.log("--- SIMULATING EMAIL RECEIPT ---");
         console.log(`To: ${email}`);
-        console.log("Subject: Your receipt from The Curiosity Cabins");
+        console.log("Subject: Your receipt from Chester House Crafting");
         console.log(receiptBody);
         console.log("--- END OF SIMULATION ---");
     }
