@@ -99,6 +99,16 @@ a {
     color: var(--secondary-color);
 }
 
+/* The secondary pages (cart management, order history, receipt, community) use this
+   simpler right-aligned link group instead of index.html's full .nav-menu — needs its
+   own spacing since .nav-link alone has none. */
+.navbar-right {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    font-weight: 600;
+}
+
 .cart-container {
     display: flex;
     align-items: center;
