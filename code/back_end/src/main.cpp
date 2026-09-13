@@ -2531,14 +2531,120 @@ bool add_user(const std::string user, const std::string new_user, const std::str
     return false;
 }
 
+// Public-store topic guard-rail (code/config/ai_guard_rails.conf, bind-mounted read-only
+// into the container — see docker-compose.yml). get_advice() is the ONLY caller of
+// call_boudica() reachable from the public web_store (its storefront chat modal and
+// kiosk.html's "Ask Boudica" panel both go through the getadvice command) — the till
+// never calls getadvice at all, and neither do the forecast/reorder predictions,
+// stockanalysis/salesanalysis, or the community-moderation call, so wiring this in here
+// rather than into call_boudica() itself naturally scopes it to exactly "the public web
+// store, nothing else" with no extra flag needed. The separate in-store code/kiosk
+// (Node) service has its own direct call to Boudica and is out of scope by design too.
+//
+// Deliberately a plain hand-editable text file rather than folded into
+// boudica_pos.conf's env-var-templated system: the whole point is that a shop's own
+// non-technical support person can edit the wording directly, with no Docker/rebuild
+// knowledge needed — Apache spawns a fresh CGI process per request, so a saved edit
+// takes effect on the very next request.
+static inline
+std::string load_topic_guardrail() {
+    std::string conf = OmniIndex::Utils::Utils::file_open("/etc/boudica_pos_config/ai_guard_rails.conf");
+    if ( conf.empty() ) { return ""; }
+
+    std::istringstream stream(conf);
+    std::string line;
+    bool capturing = false;
+    std::string block;
+    const std::string marker = "Prompt Addition:";
+
+    while ( std::getline(stream, line) ) {
+        if ( !capturing ) {
+            std::string trimmed = line;
+            OmniIndex::Utils::Utils::trim(trimmed);
+            // Skip commented lines (the file's own "## Example use" block) so only a
+            // genuinely live, uncommented marker starts capture.
+            if ( !trimmed.empty() && trimmed[0] != '#' ) {
+                size_t pos = trimmed.find(marker);
+                if ( pos != std::string::npos ) {
+                    capturing = true;
+                    block = trimmed.substr(pos + marker.size());
+                    OmniIndex::Utils::Utils::trim(block);
+                }
+            }
+            continue;
+        }
+        // "1 clear line ending" — a blank line closes the block.
+        std::string trimmed = line;
+        OmniIndex::Utils::Utils::trim(trimmed);
+        if ( trimmed.empty() ) { break; }
+        if ( !block.empty() ) { block += " "; }
+        block += trimmed;
+    }
+    return block;
+}
+
+// Two attempts at a single combined "judge topic relevance and answer-or-refuse in one
+// prompt" both proved unreliable in live testing: the model recited the guard-rail's own
+// refusal template (sometimes with raw instruction text leaking into the visible reply)
+// even for a genuinely on-topic question, and the exact same question failed the exact
+// same way on repeated tries — a real prompt-sensitivity bug, not noise. Splitting into
+// an isolated yes/no classification, sent as a file attachment (the same
+// call_boudica_with_data() trick already proven reliable for community moderation,
+// §13.4) rather than inline text, and only running the real advice prompt when it's
+// actually on-topic, fixed this in live testing. Accepted trade-off: a second AI
+// round-trip on every chat message.
+static inline
+bool is_on_topic_for_store(const std::string& question, const std::string& guardrail) {
+    std::string prompt = "A shop's customer-chat assistant follows this policy: \"" + guardrail +
+        "\" Based only on that policy, should the assistant answer the attached customer "
+        "question, or is it outside the shop's intended subject matter? Respond with ONLY "
+        "a single word: YES (answer it) or NO (it's off-topic).";
+    std::string boudica_resp = call_boudica_with_data(prompt, question, "question.txt", 300);
+    std::string text = extract_boudica_response_text(boudica_resp);
+    std::string upper = text;
+    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    size_t yes_pos = upper.find("YES");
+    size_t no_pos = upper.find("NO");
+    // Fail OPEN (treat as on-topic) on an empty/unreachable/unparseable verdict — unlike
+    // community moderation's fail-closed default, an occasional slightly-off-topic reply
+    // here is low-stakes; refusing every question the moment Boudica hiccups would be a
+    // worse customer experience than the guard-rail was meant to prevent.
+    if ( no_pos != std::string::npos && (yes_pos == std::string::npos || no_pos < yes_pos) ) {
+        return false;
+    }
+    return true;
+}
+
+// The captured config block is one instruction meant for the AI ("If the request isn't
+// about X, respond directly with: <message>. <more instructions for the AI>") — showing
+// that whole thing verbatim to a real customer would read as broken/meta. Pulls out just
+// the quoted customer-facing message after "respond directly with:"; falls back to the
+// whole block if a future rewrite of the config file drops that exact phrase, so this
+// degrades rather than breaks.
+static inline
+std::string extract_refusal_message(const std::string& guardrail) {
+    const std::string marker = "respond directly with:";
+    std::string lower = guardrail;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    size_t pos = lower.find(marker);
+    if ( pos == std::string::npos ) { return guardrail; }
+    std::string message = guardrail.substr(pos + marker.size());
+    OmniIndex::Utils::Utils::trim(message);
+    return message;
+}
+
 static inline
 std::string get_advice(std::string prompt, std::string session_id = "") {
+    std::string guardrail = load_topic_guardrail();
+    if ( !guardrail.empty() && !is_on_topic_for_store(prompt, guardrail) ) {
+        return extract_refusal_message(guardrail);
+    }
     prompt += " Please provide a detailed response to the question, and only respond with craft advice. Format as HTML please";
     // Fixed: this used to hand the raw Boudica JSON reply straight back to the caller
     // (getadvice's dispatch then wrapped that whole JSON object inside another
     // "response": "..." string with no escaping — invalid JSON as soon as the AI's answer
     // contained a quote, which is essentially always). Extracts the actual answer text.
-    std::string response = extract_boudica_response_text(call_boudica(prompt, 800, session_id));
+    std::string response = extract_boudica_response_text(call_boudica(prompt, 1200, session_id));
     OmniIndex::Utils::Utils::trim(response);
     if ( response.length() < 1 ) {
         return "Could not get a response from the AI system.";

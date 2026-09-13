@@ -51,6 +51,11 @@ services:
       STAR_PRINTER_URL: ${STAR_PRINTER_URL:-}
       STORE_NAME: ${STORE_NAME:-}
       STORE_WEBSITE: ${STORE_WEBSITE:-}
+    volumes:
+      # Live bind mount (not baked into the image) so a shop's own support person can
+      # edit code/config/ai_guard_rails.conf directly and have it take effect on the
+      # very next request — no rebuild, no restart, no Docker knowledge required.
+      - ./code/config:/etc/boudica_pos_config:ro
     healthcheck:
       # Every command now requires real credentials (the old no-credentials-needed
       # fallback was a security bug, removed — see CODE_VERIFIED_AUDIT.md) so this uses the
