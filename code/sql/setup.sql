@@ -103,6 +103,52 @@ VALUES ('web_store', 'Chester House Crafting', 'Your Eyemouth Crafting resource'
     'Hi! Ask me about your next project.')
 ON CONFLICT (site_key) DO NOTHING;
 
+-- ===== COMMUNITY FORUM =====
+-- Goal 4 of the web_store roadmap. moderation_status starts 'pending' and is flipped to
+-- 'approved' immediately on an AI ALLOW verdict (see get_moderation_verdict() in main.cpp) —
+-- 'rejected' is only ever set by a staff member from the till's moderation queue, never
+-- automatically. author_email is deliberately NOT a FK to store.customers(email) — unlike
+-- an order, a forum post has no reason to require a real customer account (the same
+-- gap that made webstoreorder need an auto-created guest row would just resurface here
+-- for anyone posting without ever having bought anything), so it's stored as plain
+-- freeform contact text instead.
+CREATE TABLE store.community_posts (
+    id SERIAL PRIMARY KEY,
+    author_email TEXT,
+    author_name TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    moderation_status TEXT DEFAULT 'pending',
+    moderation_reason TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_community_posts_status ON store.community_posts(moderation_status);
+CREATE INDEX idx_community_posts_author ON store.community_posts(author_email);
+
+CREATE TABLE store.community_replies (
+    id SERIAL PRIMARY KEY,
+    post_id INTEGER NOT NULL REFERENCES store.community_posts(id) ON DELETE CASCADE,
+    author_email TEXT,
+    author_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    moderation_status TEXT DEFAULT 'pending',
+    moderation_reason TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_community_replies_post ON store.community_replies(post_id);
+CREATE INDEX idx_community_replies_status ON store.community_replies(moderation_status);
+
+CREATE TABLE store.community_reports (
+    id SERIAL PRIMARY KEY,
+    post_id INTEGER REFERENCES store.community_posts(id) ON DELETE CASCADE,
+    reply_id INTEGER REFERENCES store.community_replies(id) ON DELETE CASCADE,
+    reporter_email TEXT,
+    reason TEXT,
+    status TEXT DEFAULT 'open',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_community_reports_status ON store.community_reports(status);
+
 -- ===== PRODUCT CATALOG WITH SEARCH CAPABILITIES =====
 CREATE TABLE store.products (
     id SERIAL PRIMARY KEY,

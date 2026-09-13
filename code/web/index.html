@@ -37,6 +37,7 @@
         <script defer src="scripts/order-history.js"></script>
         <script defer src="scripts/forecasting.js"></script>
         <script defer src="scripts/branding.js"></script>
+        <script defer src="scripts/moderation.js"></script>
         <!-- Stripe Payment Processing -->
         <script src="https://js.stripe.com/v3/"></script>
         <script defer src="scripts/till-card-payment.js"></script>
@@ -115,6 +116,7 @@
             <button class="tab-button" onclick="openTab(event, 'tab9')">📋 EOD</button>
             <button class="tab-button" onclick="openTab(event, 'tab10')">✅ Stock Take</button>
             <button class="tab-button" onclick="openTab(event, 'tab11')">🎨 Branding</button>
+            <button class="tab-button" onclick="openTab(event, 'tab12')">🛡️ Moderation</button>
         </div>
 
         <div class="tab-pages">
@@ -482,6 +484,19 @@
                         <button type="submit" class="form-submit-btn call_action" style="background-color: #3EDA95;">💾 Save Branding</button>
                     </div>
                 </form>
+            </div>
+
+            <!-- TAB 12: Community Moderation Queue (staff-only — listmoderationqueue/
+                 moderatepost/moderatereply/resolvereport are user_is_privileged-gated
+                 server-side) -->
+            <div id="tab12" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>COMMUNITY MODERATION<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <div class="tab-header">
+                    <button type="button" class="tab-button call_action" id="refresh-moderation-btn" style="background-color: #3EDA95;">🔄 Refresh</button>
+                </div>
+                <div id="moderation-pending-posts" class="results-list-container"></div>
+                <div id="moderation-pending-replies" class="results-list-container"></div>
+                <div id="moderation-open-reports" class="results-list-container"></div>
             </div>
 
             <!-- TAB FORECAST: Boudica AI Sales & Inventory Forecasting -->

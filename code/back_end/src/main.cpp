@@ -208,6 +208,61 @@ std::string extract_boudica_response_text(const std::string& boudica_json) {
     return json_str(nlohmann::json::parse(boudica_json, nullptr, false), "response");
 }
 
+// Community forum moderation (goal 4 of the web_store roadmap): "AI pre-screen, human
+// safety net" — Boudica's ALLOW verdict auto-publishes instantly (fast UX for the
+// overwhelming majority of ordinary posts); anything else (REJECT, or a reply we can't
+// parse cleanly) holds the post as 'pending' for a staff member to review from the
+// till's moderation queue. Boudica never has the final say on removal — only staff do,
+// via moderate_post_status()/moderate_reply_status() below. A fixed session_id (not
+// per-visitor) matches the pattern already used by the internal forecast/reorder
+// callers, since this isn't tied to any one visitor's own conversation.
+static inline
+std::string moderate_community_content(const std::string& text) {
+    // Uses call_boudica_with_data() (the §7.7/§11 file-attachment trick), not a plain
+    // call_boudica() with the text inline in the prompt — live-tested both ways: with the
+    // content quoted directly in the message, Boudica repeatedly replied "Post content is
+    // missing" even though it was right there in the string, the same inline-text-gets-
+    // ignored behavior already documented for stockanalysis/salesanalysis. Attaching the
+    // content as a file reliably gets it actually read.
+    std::string prompt = "You are a content moderator for a small craft shop's public customer "
+        "community forum. Read the attached file, which contains a customer's post or reply. "
+        "Decide if it should be published: reject anything that is spam, hate speech, harassment, "
+        "illegal content, or unrelated commercial advertising; allow genuine craft/hobby "
+        "discussion, questions, or friendly conversation, even if informally written. Respond "
+        "with ONLY a single word, either ALLOW or REJECT, followed by a colon and a one-sentence "
+        "reason. Example: \"ALLOW: friendly, on-topic craft question.\"";
+    std::string boudica_resp = call_boudica_with_data(prompt, text, "post.txt", 400);
+    return extract_boudica_response_text(boudica_resp);
+}
+
+// Returns {"status": "approved"|"pending", "reason": "..."} — never "rejected" outright;
+// a REJECT verdict is held as "pending" for a human to actually remove or approve, per
+// the fail-safe policy above. Also fails safe (to "pending") on an empty/unreachable/
+// unparseable Boudica reply, so a down AI backend or a wording no one anticipated can
+// never publish something un-reviewed.
+static inline
+nlohmann::json get_moderation_verdict(const std::string& text) {
+    std::string verdict_text = moderate_community_content(text);
+    nlohmann::json out;
+    std::string upper = verdict_text;
+    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    // Despite being asked for "ONLY" the verdict, Boudica was observed live wrapping its
+    // answer in quotes/markdown or adding a short lead-in — check whether ALLOW appears
+    // before REJECT anywhere in the reply rather than requiring it to be literally the
+    // first character. Still fails safe to "pending" if neither word shows up at all.
+    size_t allow_pos = upper.find("ALLOW");
+    size_t reject_pos = upper.find("REJECT");
+    if ( allow_pos != std::string::npos && (reject_pos == std::string::npos || allow_pos < reject_pos) ) {
+        out["status"] = "approved";
+    } else {
+        out["status"] = "pending";
+    }
+    size_t colon = verdict_text.find(':');
+    out["reason"] = colon != std::string::npos ? verdict_text.substr(colon + 1) : verdict_text;
+    OmniIndex::Utils::Utils::trim(out["reason"].get_ref<std::string&>());
+    return out;
+}
+
 // Legacy Gemini function (deprecated, kept for compatibility)
 static inline 
 std::string call_gemini(std::string prompt) {
@@ -1050,6 +1105,340 @@ bool add_special_order(std::string order_number, std::string customer_name, std:
         if ( error != "" || i_resp != 0 ) {
             return false;
         }
+        return true;
+    }
+    return false;
+}
+
+// ===== COMMUNITY FORUM (goal 4 of the web_store roadmap) =====
+// AI pre-screen with a human safety net: every new post/reply is run through
+// get_moderation_verdict() synchronously before insert. ALLOW publishes immediately;
+// anything else (REJECT, or an unparseable/unreachable-Boudica reply) lands as
+// 'pending' for a staff member to review from the till's moderation queue — never
+// auto-rejected/deleted outright.
+
+static inline
+nlohmann::json create_post(std::string author_email, std::string author_name, std::string title, std::string body,
+  const std::string user, const std::string password, const std::string database) {
+    author_email = clean_value(author_email);
+    author_name = clean_value(author_name);
+    title = clean_value(title);
+    body = clean_value(body);
+
+    nlohmann::json jVerdict = get_moderation_verdict(title + "\n\n" + body);
+    std::string status = json_str(jVerdict, "status");
+    std::string reason = json_str(jVerdict, "reason");
+
+    nlohmann::json out;
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) {
+        out["error"] = "System configuration error!";
+        return out;
+    }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( !pgbc._isConnected ) {
+        out["error"] = "Could not connect to the system. The error was: " + pgbc.getLastError();
+        pgbc.close();
+        return out;
+    }
+    std::string sql = "INSERT INTO store.community_posts "
+        "(author_email, author_name, title, body, moderation_status, moderation_reason) "
+        "VALUES (NULLIF($1, ''), $2, $3, $4, $5, $6) RETURNING id;";
+    std::string resp = pgbc.runCommandParams(sql, {author_email, author_name, title, body, status, reason});
+    std::string error = pgbc.getLastError();
+    pgbc.close();
+    if ( error != "" ) {
+        out["error"] = "Could not save your post. The error was: " + error;
+        return out;
+    }
+    out["id"] = safe_stol(json_str(json_row(resp), "id"));
+    out["status"] = status;
+    return out;
+}
+
+static inline
+nlohmann::json reply_to_post(const std::string post_id, std::string author_email, std::string author_name, std::string body,
+  const std::string user, const std::string password, const std::string database) {
+    author_email = clean_value(author_email);
+    author_name = clean_value(author_name);
+    body = clean_value(body);
+
+    nlohmann::json jVerdict = get_moderation_verdict(body);
+    std::string status = json_str(jVerdict, "status");
+    std::string reason = json_str(jVerdict, "reason");
+
+    nlohmann::json out;
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) {
+        out["error"] = "System configuration error!";
+        return out;
+    }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( !pgbc._isConnected ) {
+        out["error"] = "Could not connect to the system. The error was: " + pgbc.getLastError();
+        pgbc.close();
+        return out;
+    }
+    std::string sql = "INSERT INTO store.community_replies "
+        "(post_id, author_email, author_name, body, moderation_status, moderation_reason) "
+        "VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6) RETURNING id;";
+    std::string resp = pgbc.runCommandParams(sql, {post_id, author_email, author_name, body, status, reason});
+    std::string error = pgbc.getLastError();
+    pgbc.close();
+    if ( error != "" ) {
+        out["error"] = "Could not save your reply. The error was: " + error;
+        return out;
+    }
+    out["id"] = safe_stol(json_str(json_row(resp), "id"));
+    out["status"] = status;
+    return out;
+}
+
+static inline
+std::string list_posts(long page, long limit, const std::string user, const std::string password, const std::string database) {
+    if ( page < 1 ) { page = 1; }
+    if ( limit < 1 ) { limit = 1; }
+    if ( limit > 100 ) { limit = 100; }
+    long offset = (page - 1) * limit;
+
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) { return "{\"error\": \"System configuration error!\"}"; }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( !pgbc._isConnected ) {
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
+    }
+
+    std::string count_resp = pgbc.runCommand("SELECT COUNT(*) AS total FROM store.community_posts WHERE moderation_status = 'approved';");
+    long total = safe_stol(json_str(json_row(count_resp), "total"));
+
+    std::string sql = "SELECT p.id, p.author_name, p.title, p.body, p.created_at, "
+        "(SELECT COUNT(*) FROM store.community_replies r WHERE r.post_id = p.id AND r.moderation_status = 'approved') AS reply_count "
+        "FROM store.community_posts p WHERE p.moderation_status = 'approved' "
+        "ORDER BY p.created_at DESC LIMIT $1 OFFSET $2;";
+    std::string resp = pgbc.runCommandParams(sql, {std::to_string(limit), std::to_string(offset)});
+    std::string error = pgbc.getLastError();
+    pgbc.close();
+    if ( error != "" ) {
+        return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
+    }
+
+    nlohmann::json items = nlohmann::json::array();
+    for ( const auto& jItem : json_rows(resp) ) {
+        std::string id = json_str(jItem, "id");
+        if ( id.empty() ) { continue; }
+        nlohmann::json item;
+        item["id"] = safe_stol(id);
+        item["author_name"] = json_str(jItem, "author_name");
+        item["title"] = json_str(jItem, "title");
+        item["body"] = json_str(jItem, "body");
+        item["created_at"] = json_str(jItem, "created_at");
+        item["reply_count"] = safe_stol(json_str(jItem, "reply_count"));
+        items.push_back(item);
+    }
+
+    nlohmann::json out;
+    out["posts"] = items;
+    out["total"] = total;
+    out["page"] = page;
+    out["limit"] = limit;
+    return out.dump();
+}
+
+static inline
+std::string get_post(const std::string id, const std::string user, const std::string password, const std::string database) {
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) { return "{\"error\": \"System configuration error!\"}"; }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( !pgbc._isConnected ) {
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
+    }
+    std::string post_resp = pgbc.runCommandParams(
+        "SELECT id, author_name, title, body, created_at FROM store.community_posts "
+        "WHERE id = $1 AND moderation_status = 'approved';", {id});
+    nlohmann::json jPost = json_row(post_resp);
+    if ( json_str(jPost, "id").empty() ) {
+        pgbc.close();
+        return "{\"error\": \"Post not found.\"}";
+    }
+    std::string replies_resp = pgbc.runCommandParams(
+        "SELECT id, author_name, body, created_at FROM store.community_replies "
+        "WHERE post_id = $1 AND moderation_status = 'approved' ORDER BY created_at ASC;", {id});
+    std::string error = pgbc.getLastError();
+    pgbc.close();
+    if ( error != "" ) {
+        return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
+    }
+
+    nlohmann::json replies = nlohmann::json::array();
+    for ( const auto& jItem : json_rows(replies_resp) ) {
+        std::string rid = json_str(jItem, "id");
+        if ( rid.empty() ) { continue; }
+        nlohmann::json item;
+        item["id"] = safe_stol(rid);
+        item["author_name"] = json_str(jItem, "author_name");
+        item["body"] = json_str(jItem, "body");
+        item["created_at"] = json_str(jItem, "created_at");
+        replies.push_back(item);
+    }
+
+    nlohmann::json out;
+    out["id"] = safe_stol(json_str(jPost, "id"));
+    out["author_name"] = json_str(jPost, "author_name");
+    out["title"] = json_str(jPost, "title");
+    out["body"] = json_str(jPost, "body");
+    out["created_at"] = json_str(jPost, "created_at");
+    out["replies"] = replies;
+    return out.dump();
+}
+
+// post_id/reply_id are passed through as raw text and cast in SQL (NULLIF(...)::INTEGER) —
+// exactly one of the two is expected to be non-empty per call, enforced by the dispatcher.
+static inline
+bool report_content(std::string post_id, std::string reply_id, std::string reporter_email, std::string reason,
+  const std::string user, const std::string password, const std::string database) {
+    reporter_email = clean_value(reporter_email);
+    reason = clean_value(reason);
+    std::string sql = "INSERT INTO store.community_reports (post_id, reply_id, reporter_email, reason) "
+        "VALUES (NULLIF($1, '')::INTEGER, NULLIF($2, '')::INTEGER, NULLIF($3, ''), $4);";
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) { return false; }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( pgbc._isConnected ) {
+        int i_resp = pgbc.execParams(sql, {post_id, reply_id, reporter_email, reason});
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        if ( error != "" || i_resp != 0 ) { return false; }
+        return true;
+    }
+    return false;
+}
+
+// Staff-only (gated at the dispatcher, user_is_privileged) — everything a moderator
+// needs to clear the queue in one call: posts/replies still 'pending' Boudica's own
+// pre-screen, plus reports still awaiting review.
+static inline
+std::string list_moderation_queue(const std::string user, const std::string password, const std::string database) {
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) { return "{\"error\": \"System configuration error!\"}"; }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( !pgbc._isConnected ) {
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
+    }
+
+    std::string posts_resp = pgbc.runCommand(
+        "SELECT id, author_name, title, body, moderation_reason, created_at FROM store.community_posts "
+        "WHERE moderation_status = 'pending' ORDER BY created_at ASC;");
+    std::string replies_resp = pgbc.runCommand(
+        "SELECT id, post_id, author_name, body, moderation_reason, created_at FROM store.community_replies "
+        "WHERE moderation_status = 'pending' ORDER BY created_at ASC;");
+    std::string reports_resp = pgbc.runCommand(
+        "SELECT id, post_id, reply_id, reporter_email, reason, created_at FROM store.community_reports "
+        "WHERE status = 'open' ORDER BY created_at ASC;");
+    std::string error = pgbc.getLastError();
+    pgbc.close();
+    if ( error != "" ) {
+        return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
+    }
+
+    nlohmann::json posts = nlohmann::json::array();
+    for ( const auto& jItem : json_rows(posts_resp) ) {
+        std::string id = json_str(jItem, "id");
+        if ( id.empty() ) { continue; }
+        nlohmann::json item;
+        item["id"] = safe_stol(id);
+        item["author_name"] = json_str(jItem, "author_name");
+        item["title"] = json_str(jItem, "title");
+        item["body"] = json_str(jItem, "body");
+        item["moderation_reason"] = json_str(jItem, "moderation_reason");
+        item["created_at"] = json_str(jItem, "created_at");
+        posts.push_back(item);
+    }
+
+    nlohmann::json replies = nlohmann::json::array();
+    for ( const auto& jItem : json_rows(replies_resp) ) {
+        std::string id = json_str(jItem, "id");
+        if ( id.empty() ) { continue; }
+        nlohmann::json item;
+        item["id"] = safe_stol(id);
+        item["post_id"] = safe_stol(json_str(jItem, "post_id"));
+        item["author_name"] = json_str(jItem, "author_name");
+        item["body"] = json_str(jItem, "body");
+        item["moderation_reason"] = json_str(jItem, "moderation_reason");
+        item["created_at"] = json_str(jItem, "created_at");
+        replies.push_back(item);
+    }
+
+    nlohmann::json reports = nlohmann::json::array();
+    for ( const auto& jItem : json_rows(reports_resp) ) {
+        std::string id = json_str(jItem, "id");
+        if ( id.empty() ) { continue; }
+        nlohmann::json item;
+        item["id"] = safe_stol(id);
+        std::string pid = json_str(jItem, "post_id");
+        std::string rid = json_str(jItem, "reply_id");
+        item["post_id"] = pid.empty() ? nlohmann::json(nullptr) : nlohmann::json(safe_stol(pid));
+        item["reply_id"] = rid.empty() ? nlohmann::json(nullptr) : nlohmann::json(safe_stol(rid));
+        item["reporter_email"] = json_str(jItem, "reporter_email");
+        item["reason"] = json_str(jItem, "reason");
+        item["created_at"] = json_str(jItem, "created_at");
+        reports.push_back(item);
+    }
+
+    nlohmann::json out;
+    out["pending_posts"] = posts;
+    out["pending_replies"] = replies;
+    out["open_reports"] = reports;
+    return out.dump();
+}
+
+static inline
+bool moderate_post_status(const std::string post_id, const std::string status,
+  const std::string user, const std::string password, const std::string database) {
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) { return false; }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( pgbc._isConnected ) {
+        int i_resp = pgbc.execParams("UPDATE store.community_posts SET moderation_status = $1 WHERE id = $2;", {status, post_id});
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        if ( error != "" || i_resp != 0 ) { return false; }
+        return true;
+    }
+    return false;
+}
+
+static inline
+bool moderate_reply_status(const std::string reply_id, const std::string status,
+  const std::string user, const std::string password, const std::string database) {
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) { return false; }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( pgbc._isConnected ) {
+        int i_resp = pgbc.execParams("UPDATE store.community_replies SET moderation_status = $1 WHERE id = $2;", {status, reply_id});
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        if ( error != "" || i_resp != 0 ) { return false; }
+        return true;
+    }
+    return false;
+}
+
+static inline
+bool resolve_report(const std::string report_id, const std::string user, const std::string password, const std::string database) {
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) { return false; }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( pgbc._isConnected ) {
+        int i_resp = pgbc.execParams("UPDATE store.community_reports SET status = 'reviewed' WHERE id = $1;", {report_id});
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        if ( error != "" || i_resp != 0 ) { return false; }
         return true;
     }
     return false;
@@ -3667,6 +4056,157 @@ int main (int argc, char** argv) {
             return 0;
         } else {
             emit_json_error(order_number + ", failed to be saved on the system.");
+            return 0;
+        }
+    }
+    else if ( command == "createpost" ) {
+        // Public — any storefront visitor. Moderated synchronously (get_moderation_verdict,
+        // called inside create_post()) before it ever reaches other visitors.
+        std::string author_email, author_name, title, body;
+        it = queryData.find("email");
+        if ( it != queryData.end() ) { author_email = url_decode(it->second); }
+        it = queryData.find("name");
+        if ( it != queryData.end() ) { author_name = url_decode(it->second); }
+        it = queryData.find("title");
+        if ( it != queryData.end() ) { title = url_decode(it->second); }
+        it = queryData.find("body");
+        if ( it != queryData.end() ) { body = url_decode(it->second); }
+
+        if ( author_name.empty() || title.empty() || body.empty() ) {
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
+        }
+
+        nlohmann::json result = create_post(author_email, author_name, title, body,
+            json_str(jUser, "username"), password, database);
+        std::cout << result.dump() << "\n\n";
+        return 0;
+    }
+    else if ( command == "replytopost" ) {
+        std::string post_id, author_email, author_name, body;
+        it = queryData.find("post_id");
+        if ( it != queryData.end() ) { post_id = url_decode(it->second); }
+        it = queryData.find("email");
+        if ( it != queryData.end() ) { author_email = url_decode(it->second); }
+        it = queryData.find("name");
+        if ( it != queryData.end() ) { author_name = url_decode(it->second); }
+        it = queryData.find("body");
+        if ( it != queryData.end() ) { body = url_decode(it->second); }
+
+        if ( post_id.empty() || author_name.empty() || body.empty() ) {
+            emit_json_error("Please provide all of the required fields.");
+            return 0;
+        }
+
+        nlohmann::json result = reply_to_post(post_id, author_email, author_name, body,
+            json_str(jUser, "username"), password, database);
+        std::cout << result.dump() << "\n\n";
+        return 0;
+    }
+    else if ( command == "listposts" ) {
+        long page = 1, limit = 20;
+        it = queryData.find("page");
+        if ( it != queryData.end() ) { page = safe_stol(url_decode(it->second)); }
+        it = queryData.find("limit");
+        if ( it != queryData.end() ) { limit = safe_stol(url_decode(it->second)); }
+        std::string response = list_posts(page, limit, json_str(jUser, "username"), password, database);
+        std::cout << response << "\n\n";
+        return 0;
+    }
+    else if ( command == "getpost" ) {
+        std::string id;
+        it = queryData.find("id");
+        if ( it != queryData.end() ) { id = url_decode(it->second); }
+        if ( id.empty() ) {
+            emit_json_error("Please provide a post id.");
+            return 0;
+        }
+        std::string response = get_post(id, json_str(jUser, "username"), password, database);
+        std::cout << response << "\n\n";
+        return 0;
+    }
+    else if ( command == "reportpost" ) {
+        std::string post_id, reply_id, reporter_email, reason;
+        it = queryData.find("post_id");
+        if ( it != queryData.end() ) { post_id = url_decode(it->second); }
+        it = queryData.find("reply_id");
+        if ( it != queryData.end() ) { reply_id = url_decode(it->second); }
+        it = queryData.find("email");
+        if ( it != queryData.end() ) { reporter_email = url_decode(it->second); }
+        it = queryData.find("reason");
+        if ( it != queryData.end() ) { reason = url_decode(it->second); }
+
+        if ( (post_id.empty() && reply_id.empty()) || reason.empty() ) {
+            emit_json_error("Please provide a post or reply to report, and a reason.");
+            return 0;
+        }
+
+        if ( report_content(post_id, reply_id, reporter_email, reason, json_str(jUser, "username"), password, database) ) {
+            emit_json_response("Thank you — this has been reported for review.");
+            return 0;
+        } else {
+            emit_json_error("Could not save your report.");
+            return 0;
+        }
+    }
+    else if ( command == "listmoderationqueue" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        std::string response = list_moderation_queue(json_str(jUser, "username"), password, database);
+        std::cout << response << "\n\n";
+        return 0;
+    }
+    else if ( command == "moderatepost" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        std::string post_id, status;
+        it = queryData.find("post_id");
+        if ( it != queryData.end() ) { post_id = url_decode(it->second); }
+        it = queryData.find("status");
+        if ( it != queryData.end() ) { status = url_decode(it->second); }
+        if ( post_id.empty() || (status != "approved" && status != "rejected") ) {
+            emit_json_error("Please provide a post id and a status of 'approved' or 'rejected'.");
+            return 0;
+        }
+        if ( moderate_post_status(post_id, status, json_str(jUser, "username"), password, database) ) {
+            emit_json_response("Post has been " + status + ".");
+            return 0;
+        } else {
+            emit_json_error("Could not update that post.");
+            return 0;
+        }
+    }
+    else if ( command == "moderatereply" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        std::string reply_id, status;
+        it = queryData.find("reply_id");
+        if ( it != queryData.end() ) { reply_id = url_decode(it->second); }
+        it = queryData.find("status");
+        if ( it != queryData.end() ) { status = url_decode(it->second); }
+        if ( reply_id.empty() || (status != "approved" && status != "rejected") ) {
+            emit_json_error("Please provide a reply id and a status of 'approved' or 'rejected'.");
+            return 0;
+        }
+        if ( moderate_reply_status(reply_id, status, json_str(jUser, "username"), password, database) ) {
+            emit_json_response("Reply has been " + status + ".");
+            return 0;
+        } else {
+            emit_json_error("Could not update that reply.");
+            return 0;
+        }
+    }
+    else if ( command == "resolvereport" ) {
+        if ( !user_is_privileged(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        std::string report_id;
+        it = queryData.find("report_id");
+        if ( it != queryData.end() ) { report_id = url_decode(it->second); }
+        if ( report_id.empty() ) {
+            emit_json_error("Please provide a report id.");
+            return 0;
+        }
+        if ( resolve_report(report_id, json_str(jUser, "username"), password, database) ) {
+            emit_json_response("Report marked as reviewed.");
+            return 0;
+        } else {
+            emit_json_error("Could not update that report.");
             return 0;
         }
     }

@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Community - Chester House Crafting</title>
+    <link rel="icon" href="assets/logo.ico" type="image/x-icon">
+    <link rel="stylesheet" href="styles/styles.css">
+    <link rel="stylesheet" href="styles/toast.css">
+    <style>
+        .community-container {
+            max-width: 800px;
+            margin: 60px auto;
+            padding: 40px;
+        }
+        .community-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+        .community-header h1 { font-size: 32px; color: #333; margin: 0; }
+        .community-header p { color: #666; font-size: 14px; margin: 6px 0 0; }
+
+        .post-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        .post-card h3 { margin: 0 0 6px; }
+        .post-meta { color: #999; font-size: 12px; margin-bottom: 10px; }
+        .post-body { color: #333; white-space: pre-wrap; margin-bottom: 10px; }
+        .post-actions { display: flex; gap: 10px; }
+        .post-actions button {
+            background: none; border: none; color: #667eea; cursor: pointer;
+            font-size: 13px; font-weight: 600; padding: 0;
+        }
+        .post-actions button:hover { text-decoration: underline; }
+
+        .post-detail { display: none; margin-top: 16px; border-top: 1px solid #eee; padding-top: 16px; }
+        .post-detail.active { display: block; }
+        .reply-row { background: #f8f9ff; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+        .reply-meta { color: #999; font-size: 11px; margin-bottom: 4px; }
+        .reply-body { white-space: pre-wrap; font-size: 14px; }
+
+        .reply-form-fields, .modal-form-fields {
+            display: flex; flex-direction: column; gap: 10px; margin-top: 10px;
+        }
+        .reply-form-fields input, .reply-form-fields textarea,
+        .modal-form-fields input, .modal-form-fields textarea {
+            padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: inherit;
+        }
+        .reply-form-fields button, .modal-form-fields button {
+            align-self: flex-start; padding: 8px 18px; background: #667eea; color: white;
+            border: none; border-radius: 4px; cursor: pointer; font-weight: 600;
+        }
+
+        .empty-state { text-align: center; padding: 60px 20px; color: #999; }
+
+        /* Reused simple modal, same overlay pattern as index.html's other modals */
+        .modal-overlay {
+            display: none; position: fixed; z-index: 1000; left: 0; top: 0;
+            width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5);
+            align-items: center; justify-content: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: white; padding: 30px; border-radius: 10px; max-width: 500px;
+            width: 90%; max-height: 85vh; overflow-y: auto; position: relative;
+        }
+        .modal-close {
+            position: absolute; top: 12px; right: 16px; background: none; border: none;
+            font-size: 24px; cursor: pointer; color: #999;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-left">
+            <a href="index.html" class="logo">Chester House Crafting</a>
+        </div>
+        <div class="navbar-right">
+            <a href="cart.html" class="nav-link">Cart</a>
+            <a href="order-history.html" class="nav-link">Order History</a>
+            <a href="community.html" class="nav-link active">Community</a>
+        </div>
+    </nav>
+
+    <div class="community-container">
+        <div class="community-header">
+            <div>
+                <h1>Community</h1>
+                <p>Share your projects, ask questions, and swap tips with other crafters.</p>
+            </div>
+            <button class="btn" id="new-post-btn">+ New Post</button>
+        </div>
+
+        <div id="posts-list">
+            <div class="empty-state">Loading...</div>
+        </div>
+    </div>
+
+    <!-- New Post Modal -->
+    <div id="new-post-modal" class="modal-overlay">
+        <div class="modal">
+            <button class="modal-close" data-modal-close>&times;</button>
+            <h2>Start a New Post</h2>
+            <form id="new-post-form" class="modal-form-fields">
+                <input type="text" id="post-name" placeholder="Your name" required>
+                <input type="email" id="post-email" placeholder="Your email (kept private)" required>
+                <input type="text" id="post-title" placeholder="Title" required>
+                <textarea id="post-body" rows="5" placeholder="What's on your mind?" required></textarea>
+                <button type="submit">Post</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Report Modal -->
+    <div id="report-modal" class="modal-overlay">
+        <div class="modal">
+            <button class="modal-close" data-modal-close>&times;</button>
+            <h2>Report Content</h2>
+            <form id="report-form" class="modal-form-fields">
+                <input type="email" id="report-email" placeholder="Your email (optional)">
+                <textarea id="report-reason" rows="3" placeholder="Why are you reporting this?" required></textarea>
+                <button type="submit">Submit Report</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script type="module">
+        import Toast from './js/toast.js';
+        import { apiCall, escapeHtml } from './js/session.js';
+        const toast = Toast();
+
+        const postsList = document.getElementById('posts-list');
+        const newPostModal = document.getElementById('new-post-modal');
+        const reportModal = document.getElementById('report-modal');
+
+        let lastLoadedPosts = [];
+        let reportTarget = null; // { postId, replyId }
+
+        // Track this browser's own pending submissions locally — listposts/getpost never
+        // return anything but 'approved' content, so there's no other way to show "your
+        // post is awaiting review" without re-fetching content the backend won't hand back.
+        function getPendingSubmissions() {
+            try { return JSON.parse(sessionStorage.getItem('community_pending') || '[]'); }
+            catch { return []; }
+        }
+        function addPendingSubmission(entry) {
+            const pending = getPendingSubmissions();
+            pending.push(entry);
+            sessionStorage.setItem('community_pending', JSON.stringify(pending));
+        }
+
+        function openModal(modal) { modal.classList.add('active'); }
+        function closeModal(modal) { modal.classList.remove('active'); }
+        document.querySelectorAll('[data-modal-close]').forEach(btn => {
+            btn.addEventListener('click', () => closeModal(btn.closest('.modal-overlay')));
+        });
+        document.querySelectorAll('.modal-overlay').forEach(overlay => {
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay); });
+        });
+
+        async function loadPosts() {
+            try {
+                const data = await apiCall('listposts', { limit: '50' });
+                if (data.error) { throw new Error(data.error); }
+                lastLoadedPosts = data.posts || [];
+                renderPosts();
+            } catch (err) {
+                postsList.innerHTML = `<div class="empty-state">Could not load the community right now.</div>`;
+                console.error('Failed to load posts:', err);
+            }
+        }
+
+        function renderPendingBanner() {
+            const pending = getPendingSubmissions();
+            if (pending.length === 0) { return ''; }
+            const items = pending.map(p => `<li>${escapeHtml(p.title || 'Your reply')} — awaiting review</li>`).join('');
+            return `<div class="post-card" style="background:#fff8ea;border:1px solid #f0dca0;">
+                <strong>Awaiting review</strong>
+                <ul style="margin:8px 0 0 18px;">${items}</ul>
+            </div>`;
+        }
+
+        function renderPosts() {
+            if (lastLoadedPosts.length === 0) {
+                postsList.innerHTML = renderPendingBanner() + `<div class="empty-state">No posts yet — be the first to say hello!</div>`;
+                return;
+            }
+            let html = renderPendingBanner();
+            lastLoadedPosts.forEach((post, index) => {
+                const date = new Date(post.created_at).toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
+                html += `
+                    <div class="post-card">
+                        <h3>${escapeHtml(post.title)}</h3>
+                        <div class="post-meta">By ${escapeHtml(post.author_name)} · ${escapeHtml(date)} · ${post.reply_count} repl${post.reply_count === 1 ? 'y' : 'ies'}</div>
+                        <div class="post-body">${escapeHtml(post.body)}</div>
+                        <div class="post-actions">
+                            <button data-action="view" data-index="${index}">View & Reply</button>
+                            <button data-action="report-post" data-post-id="${post.id}">Report</button>
+                        </div>
+                        <div class="post-detail" id="post-detail-${post.id}"></div>
+                    </div>
+                `;
+            });
+            postsList.innerHTML = html;
+        }
+
+        async function viewPost(post) {
+            const detail = document.getElementById('post-detail-' + post.id);
+            const isOpen = detail.classList.contains('active');
+            document.querySelectorAll('.post-detail.active').forEach(el => el.classList.remove('active'));
+            if (isOpen) { return; }
+
+            detail.innerHTML = '<p>Loading replies...</p>';
+            detail.classList.add('active');
+            try {
+                const data = await apiCall('getpost', { id: String(post.id) });
+                if (data.error) { throw new Error(data.error); }
+                let repliesHtml = '';
+                (data.replies || []).forEach(r => {
+                    const rdate = new Date(r.created_at).toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
+                    repliesHtml += `
+                        <div class="reply-row">
+                            <div class="reply-meta">${escapeHtml(r.author_name)} · ${escapeHtml(rdate)}
+                                <button data-action="report-reply" data-reply-id="${r.id}" style="background:none;border:none;color:#999;cursor:pointer;font-size:11px;">Report</button>
+                            </div>
+                            <div class="reply-body">${escapeHtml(r.body)}</div>
+                        </div>
+                    `;
+                });
+                detail.innerHTML = `
+                    ${repliesHtml || '<p style="color:#999;">No replies yet.</p>'}
+                    <form class="reply-form-fields" data-post-id="${post.id}">
+                        <input type="text" placeholder="Your name" class="reply-name" required>
+                        <input type="email" placeholder="Your email (kept private)" class="reply-email" required>
+                        <textarea rows="3" placeholder="Write a reply..." class="reply-body-input" required></textarea>
+                        <button type="submit">Reply</button>
+                    </form>
+                `;
+            } catch (err) {
+                detail.innerHTML = `<p>Could not load replies.</p>`;
+                console.error('Failed to load post:', err);
+            }
+        }
+
+        postsList.addEventListener('click', (e) => {
+            const viewBtn = e.target.closest('[data-action="view"]');
+            if (viewBtn) {
+                viewPost(lastLoadedPosts[Number(viewBtn.dataset.index)]);
+                return;
+            }
+            const reportPostBtn = e.target.closest('[data-action="report-post"]');
+            if (reportPostBtn) {
+                reportTarget = { postId: reportPostBtn.dataset.postId, replyId: null };
+                openModal(reportModal);
+                return;
+            }
+            const reportReplyBtn = e.target.closest('[data-action="report-reply"]');
+            if (reportReplyBtn) {
+                reportTarget = { postId: null, replyId: reportReplyBtn.dataset.replyId };
+                openModal(reportModal);
+                return;
+            }
+        });
+
+        postsList.addEventListener('submit', async (e) => {
+            const form = e.target.closest('.reply-form-fields');
+            if (!form) { return; }
+            e.preventDefault();
+            const postId = form.dataset.postId;
+            const name = form.querySelector('.reply-name').value.trim();
+            const email = form.querySelector('.reply-email').value.trim();
+            const body = form.querySelector('.reply-body-input').value.trim();
+
+            const data = await apiCall('replytopost', { post_id: postId, name, email, body });
+            if (data.error) {
+                toast.showToast(data.error, 'error');
+                return;
+            }
+            if (data.status === 'approved') {
+                toast.showToast('Reply posted!', 'success');
+                await loadPosts();
+            } else {
+                addPendingSubmission({ title: 'Your reply' });
+                toast.showToast('Thanks — your reply is awaiting review before it appears publicly.', 'info');
+                renderPosts();
+            }
+        });
+
+        document.getElementById('new-post-btn').addEventListener('click', () => openModal(newPostModal));
+
+        document.getElementById('new-post-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('post-name').value.trim();
+            const email = document.getElementById('post-email').value.trim();
+            const title = document.getElementById('post-title').value.trim();
+            const body = document.getElementById('post-body').value.trim();
+
+            const data = await apiCall('createpost', { name, email, title, body });
+            if (data.error) {
+                toast.showToast(data.error, 'error');
+                return;
+            }
+            closeModal(newPostModal);
+            e.target.reset();
+            if (data.status === 'approved') {
+                toast.showToast('Your post is live!', 'success');
+                await loadPosts();
+            } else {
+                addPendingSubmission({ title });
+                toast.showToast('Thanks — your post is awaiting review before it appears publicly.', 'info');
+                renderPosts();
+            }
+        });
+
+        document.getElementById('report-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('report-email').value.trim();
+            const reason = document.getElementById('report-reason').value.trim();
+            const params = { email, reason };
+            if (reportTarget.postId) { params.post_id = reportTarget.postId; }
+            if (reportTarget.replyId) { params.reply_id = reportTarget.replyId; }
+
+            const data = await apiCall('reportpost', params);
+            if (data.error) {
+                toast.showToast(data.error, 'error');
+                return;
+            }
+            closeModal(reportModal);
+            e.target.reset();
+            toast.showToast('Thank you for the report.', 'success');
+        });
+
+        loadPosts();
+    </script>
+</body>
+</html>
