@@ -1708,6 +1708,155 @@ std::string get_catalog(const std::string search_term, long page, long limit,
     return out.dump();
 }
 
+// Backs web_store's kiosk mode (goal 3 of the web_store roadmap) with the same no-code
+// branding pattern code/kiosk already has (its Node-backed admin.html + branding.json) —
+// web_store has no server of its own (a deliberate design choice, see
+// code/web_store/js/session.js), so this lives in the CGI backend + a DB row instead of a
+// second Node service. One row per site_key so this isn't re-invented for the next site.
+static inline
+std::string get_branding(const std::string& site_key, const std::string& user,
+  const std::string& password, const std::string& database) {
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) {
+        return "{\"error\": \"System configuration error!\"}";
+    }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( !pgbc._isConnected ) {
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        return "{\"error\": \"Could not connect to the system. The error was: " + error + "\"}";
+    }
+    std::string sql = "SELECT store_name, tagline, primary_color, accent_color, logo_url, welcome_message "
+        "FROM store.site_branding WHERE site_key = $1;";
+    std::string resp = pgbc.runCommandParams(sql, {site_key});
+    pgbc.close();
+    nlohmann::json jRow = json_row(resp);
+    nlohmann::json out;
+    std::string store_name = json_str(jRow, "store_name");
+    std::string primary_color = json_str(jRow, "primary_color");
+    std::string accent_color = json_str(jRow, "accent_color");
+    out["store_name"] = !store_name.empty() ? store_name : "Chester House Crafting";
+    out["tagline"] = json_str(jRow, "tagline");
+    out["primary_color"] = !primary_color.empty() ? primary_color : "#25214e";
+    out["accent_color"] = !accent_color.empty() ? accent_color : "#b8860b";
+    out["logo_url"] = json_str(jRow, "logo_url");
+    out["welcome_message"] = json_str(jRow, "welcome_message");
+    return out.dump();
+}
+
+static inline
+bool set_branding(const std::string& site_key, std::string store_name, std::string tagline,
+  std::string primary_color, std::string accent_color, std::string logo_url, std::string welcome_message,
+  const std::string user, const std::string password, const std::string database) {
+    store_name = clean_value(store_name);
+    tagline = clean_value(tagline);
+    primary_color = clean_value(primary_color);
+    accent_color = clean_value(accent_color);
+    logo_url = clean_value(logo_url);
+    welcome_message = clean_value(welcome_message);
+    std::string sql = "INSERT INTO store.site_branding "
+        "(site_key, store_name, tagline, primary_color, accent_color, logo_url, welcome_message, updated_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP) "
+        "ON CONFLICT (site_key) DO UPDATE SET store_name = EXCLUDED.store_name, tagline = EXCLUDED.tagline, "
+        "primary_color = EXCLUDED.primary_color, accent_color = EXCLUDED.accent_color, "
+        "logo_url = EXCLUDED.logo_url, welcome_message = EXCLUDED.welcome_message, updated_at = CURRENT_TIMESTAMP;";
+    std::map<std::string, std::string> m_conf = get_configuration();
+    if ( m_conf.empty() ) {
+        return false;
+    }
+    Postgresql pgbc = Postgresql( user, password, m_conf["server"], m_conf["port"], database );
+    if ( pgbc._isConnected ) {
+        int i_resp = pgbc.execParams(sql, {site_key, store_name, tagline, primary_color, accent_color, logo_url, welcome_message});
+        std::string error = pgbc.getLastError();
+        pgbc.close();
+        if ( error != "" || i_resp != 0 ) {
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// The kiosk's own "smart search" (server.js's askBoudicaToPickProducts, CODE_VERIFIED_AUDIT.md
+// §11): get_catalog()'s multi-word AND-across-fields match already handles most queries, but a
+// conceptual question ("what do I need to make a teddy bear?") won't match any single
+// column. On a zero-hit direct search, fall back to asking Boudica to pick matching barcodes
+// out of the real catalog — sent as a file attachment via call_boudica_with_data(), since
+// inline JSON in the message text gets ignored by Boudica's RAG/session behavior (§7.7).
+static inline
+std::string smart_search(const std::string& query, const std::string& user,
+  const std::string& password, const std::string& database) {
+    std::string direct = get_catalog(query, 1, 24, user, password, database);
+    nlohmann::json jDirect = nlohmann::json::parse(direct, nullptr, false);
+    if ( !jDirect.is_discarded() && jDirect.contains("products") && !jDirect["products"].empty() ) {
+        jDirect["mode"] = "direct";
+        return jDirect.dump();
+    }
+
+    std::string pool_resp = get_catalog("", 1, 150, user, password, database);
+    nlohmann::json jPool = nlohmann::json::parse(pool_resp, nullptr, false);
+    if ( jPool.is_discarded() || !jPool.contains("products") || jPool["products"].empty() ) {
+        nlohmann::json out;
+        out["products"] = nlohmann::json::array();
+        out["mode"] = "ai";
+        out["note"] = "No products are currently listed to search.";
+        return out.dump();
+    }
+
+    nlohmann::json compact = nlohmann::json::array();
+    for ( const auto& p : jPool["products"] ) {
+        nlohmann::json c;
+        c["barcode"] = p.value("barcode", "");
+        c["description"] = p.value("description", "");
+        c["color"] = p.value("color", "");
+        c["type"] = p.value("type", "");
+        c["price"] = p.value("price", 0.0);
+        c["availability"] = p.value("availability", "");
+        compact.push_back(c);
+    }
+
+    std::string prompt = "A customer at a craft shop asked: \"" + query + "\". From the attached product "
+        "catalog (a JSON array of {barcode, description, color, type, price, availability}), pick the "
+        "barcodes of any products that genuinely match what they're looking for, even if the wording "
+        "doesn't match exactly (e.g. a conceptual/project question). Respond with ONLY a JSON object of "
+        "the exact shape {\"items\": [\"barcode1\", \"barcode2\"], \"note\": \"one short sentence\"} and "
+        "nothing else. If nothing matches, return {\"items\": [], \"note\": \"a short explanation\"}.";
+
+    std::string boudica_resp = call_boudica_with_data(prompt, compact.dump(), "catalog.json");
+    std::string text = extract_boudica_response_text(boudica_resp);
+
+    size_t start = text.find('{');
+    size_t end = text.rfind('}');
+    nlohmann::json jVerdict = nlohmann::json::object();
+    if ( start != std::string::npos && end != std::string::npos && end > start ) {
+        jVerdict = nlohmann::json::parse(text.substr(start, end - start + 1), nullptr, false);
+    }
+
+    nlohmann::json matched = nlohmann::json::array();
+    std::string note;
+    if ( !jVerdict.is_discarded() && jVerdict.is_object() ) {
+        note = json_str(jVerdict, "note");
+        if ( jVerdict.contains("items") && jVerdict["items"].is_array() ) {
+            for ( const auto& barcode_val : jVerdict["items"] ) {
+                if ( !barcode_val.is_string() ) { continue; }
+                std::string barcode = barcode_val.get<std::string>();
+                for ( const auto& p : jPool["products"] ) {
+                    if ( json_str(p, "barcode") == barcode ) {
+                        matched.push_back(p);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    nlohmann::json out;
+    out["products"] = matched;
+    out["mode"] = "ai";
+    out["note"] = note;
+    return out.dump();
+}
+
 
 static inline
 std::string get_dashboard(const std::string user,
@@ -3257,6 +3406,60 @@ int main (int argc, char** argv) {
         std::string response = get_catalog(q, page, limit, json_str(jUser, "username"), password, database);
         std::cout << response << "\n\n";
         return 0;
+    }
+    else if ( command == "smartsearch" ) {
+        std::string q;
+        it = queryData.find("q");
+        if ( it != queryData.end() ) { q = url_decode(it->second); }
+        if ( q.empty() ) {
+            emit_json_error("Please provide a search query.");
+            return 0;
+        }
+        std::string response = smart_search(q, json_str(jUser, "username"), password, database);
+        std::cout << response << "\n\n";
+        return 0;
+    }
+    else if ( command == "getbranding" ) {
+        std::string site_key = "web_store";
+        it = queryData.find("site_key");
+        if ( it != queryData.end() ) { site_key = url_decode(it->second); }
+        std::string response = get_branding(site_key, json_str(jUser, "username"), password, database);
+        std::cout << response << "\n\n";
+        return 0;
+    }
+    else if ( command == "setbranding" ) {
+        // A storefront-branding change is an admin action performed from the till, not
+        // something the public storefront itself can trigger.
+        if ( !user_is_admin(jUser) ) { emit_json_error("You do not have permission to perform this action."); return 0; }
+        std::string site_key = "web_store", store_name, tagline, primary_color, accent_color, logo_url, welcome_message;
+        it = queryData.find("site_key");
+        if ( it != queryData.end() ) { site_key = url_decode(it->second); }
+        it = queryData.find("store_name");
+        if ( it != queryData.end() ) { store_name = url_decode(it->second); }
+        it = queryData.find("tagline");
+        if ( it != queryData.end() ) { tagline = url_decode(it->second); }
+        it = queryData.find("primary_color");
+        if ( it != queryData.end() ) { primary_color = url_decode(it->second); }
+        it = queryData.find("accent_color");
+        if ( it != queryData.end() ) { accent_color = url_decode(it->second); }
+        it = queryData.find("logo_url");
+        if ( it != queryData.end() ) { logo_url = url_decode(it->second); }
+        it = queryData.find("welcome_message");
+        if ( it != queryData.end() ) { welcome_message = url_decode(it->second); }
+
+        if ( store_name.empty() ) {
+            emit_json_error("Please provide at least a store name.");
+            return 0;
+        }
+
+        if ( set_branding(site_key, store_name, tagline, primary_color, accent_color, logo_url, welcome_message,
+                json_str(jUser, "username"), password, database) ) {
+            emit_json_response("Branding has been updated.");
+            return 0;
+        } else {
+            emit_json_error("Branding failed to be saved on the system.");
+            return 0;
+        }
     }
     else if ( command == "quantitylookup" ) {
          std::string barcode;

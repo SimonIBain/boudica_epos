@@ -81,6 +81,28 @@ CREATE TABLE store.special_orders (
 CREATE INDEX idx_special_orders_status ON store.special_orders(status);
 CREATE INDEX idx_special_orders_due_date ON store.special_orders(due_date);
 
+-- ===== SITE BRANDING =====
+-- No-code branding store for public-facing sites (web_store's kiosk mode, goal 3 of the
+-- web_store roadmap) — mirrors code/kiosk's Node-backed branding.json, but lives here
+-- since web_store has no server of its own to hold that state in. One row per site_key
+-- so this isn't re-invented if another site needs the same thing later.
+CREATE TABLE store.site_branding (
+    id SERIAL PRIMARY KEY,
+    site_key TEXT UNIQUE NOT NULL,
+    store_name TEXT NOT NULL,
+    tagline TEXT,
+    primary_color TEXT,
+    accent_color TEXT,
+    logo_url TEXT,
+    welcome_message TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO store.site_branding (site_key, store_name, tagline, primary_color, accent_color, logo_url, welcome_message)
+VALUES ('web_store', 'Chester House Crafting', 'Your Eyemouth Crafting resource', '#25214e', '#b8860b', 'assets/logo.png',
+    'Hi! Ask me about your next project.')
+ON CONFLICT (site_key) DO NOTHING;
+
 -- ===== PRODUCT CATALOG WITH SEARCH CAPABILITIES =====
 CREATE TABLE store.products (
     id SERIAL PRIMARY KEY,

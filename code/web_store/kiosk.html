@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kiosk - Chester House Crafting</title>
+    <link rel="icon" href="assets/logo.ico" type="image/x-icon">
+    <!-- Boudica's chat advice is real HTML by design (get_advice() asks the model to
+         "Format as HTML") — DOMPurify sanitizes it before render. Same approach as
+         index.html's storefront chat modal, see CODE_VERIFIED_AUDIT.md §12. -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+    <style>
+        :root { --primary: #25214e; --accent: #b8860b; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #f4f4f7; color: #222; }
+        header { background: var(--primary); color: #fff; padding: 18px 20px; display: flex; align-items: center; gap: 14px; }
+        header img { height: 48px; width: 48px; object-fit: contain; border-radius: 8px; background: #fff; padding: 4px; }
+        header h1 { margin: 0; font-size: 22px; }
+        header p { margin: 2px 0 0; font-size: 13px; opacity: 0.85; }
+        header .back-link { margin-left: auto; color: #fff; opacity: 0.85; font-size: 13px; text-decoration: none; }
+        header .back-link:hover { opacity: 1; text-decoration: underline; }
+
+        nav { display: flex; background: #fff; border-bottom: 1px solid #ddd; }
+        nav button { flex: 1; padding: 16px; font-size: 16px; font-weight: 600; border: none; background: none; cursor: pointer; color: #666; border-bottom: 3px solid transparent; }
+        nav button.active { color: var(--primary); border-bottom-color: var(--accent); }
+
+        main { max-width: 900px; margin: 0 auto; padding: 20px 16px 60px; }
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        .search-row { display: flex; gap: 8px; margin-bottom: 8px; }
+        #searchBox { flex-grow: 1; padding: 14px 16px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; }
+        #searchBtn { padding: 0 20px; border-radius: 8px; border: none; background: var(--accent); color: #fff; font-weight: 700; cursor: pointer; font-size: 15px; }
+        .search-hint { font-size: 12px; color: #888; margin: 0 0 18px; }
+        .ai-note { background: #fff8ea; border: 1px solid #f0dca0; color: #7a5c00; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
+        .searching-state { text-align: center; color: #888; padding: 40px 10px; }
+
+        .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+        .product-card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+        .product-card h3 { margin: 0 0 6px; font-size: 15px; }
+        .product-card .meta { font-size: 12px; color: #777; margin-bottom: 10px; }
+        .product-card .price { font-size: 18px; font-weight: 700; color: var(--primary); }
+        .badge { display: inline-block; margin-top: 8px; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+        .badge.in_stock { background: #e3f6e8; color: #1a7f37; }
+        .badge.low_stock { background: #fff4e0; color: #a5680a; }
+        .badge.out_of_stock { background: #fbe9e9; color: #b3261e; }
+
+        #loadMoreRow { text-align: center; margin-top: 20px; }
+        #loadMoreBtn { padding: 10px 22px; border-radius: 6px; border: 1px solid var(--primary); background: #fff; color: var(--primary); font-weight: 600; cursor: pointer; }
+        .empty-state, .error-state { text-align: center; color: #888; padding: 40px 10px; }
+
+        .ai-box { background: #fff; border-radius: 12px; padding: 20px; }
+        .chat-log { min-height: 320px; max-height: 55vh; overflow-y: auto; background: #f8f8fb; border: 1px solid #e5e5ea; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+        .chat-line { margin-bottom: 12px; line-height: 1.4; }
+        .chat-line b { color: var(--primary); }
+        .chat-input-row { display: flex; gap: 10px; }
+        #chatInput { flex-grow: 1; padding: 12px 14px; border-radius: 8px; border: 1px solid #ccc; font-size: 15px; }
+        #chatSubmit { padding: 12px 24px; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <img id="storeLogo" alt="" hidden>
+        <div>
+            <h1 id="storeName">Our Store</h1>
+            <p id="storeTagline" hidden></p>
+        </div>
+        <a class="back-link" href="index.html">&larr; Back to store</a>
+    </header>
+
+    <nav>
+        <button id="tabStockBtn" class="active" onclick="showPanel('stock')">Browse Stock</button>
+        <button id="tabChatBtn" onclick="showPanel('chat')">Ask Boudica</button>
+    </nav>
+
+    <main>
+        <section id="stockPanel" class="panel active">
+            <div class="search-row">
+                <input type="text" id="searchBox" placeholder="Search, or ask a question like &quot;what would suit a craft bear?&quot;">
+                <button id="searchBtn">Search</button>
+            </div>
+            <p class="search-hint">Type to filter instantly, or press Search to ask Boudica if nothing matches.</p>
+            <div id="aiNote" class="ai-note" hidden></div>
+            <div id="productGrid" class="product-grid"></div>
+            <div id="loadMoreRow" hidden><button id="loadMoreBtn">Show more</button></div>
+        </section>
+
+        <section id="chatPanel" class="panel">
+            <div class="ai-box">
+                <div id="chatLog" class="chat-log"></div>
+                <div class="chat-input-row">
+                    <input type="text" id="chatInput" placeholder="Ask a question...">
+                    <button id="chatSubmit">Send</button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script type="module">
+        import { apiCall } from './js/session.js';
+        import EPOS from './js/epos.js';
+
+        const epos = EPOS();
+        let currentPage = 1;
+        let currentQuery = '';
+        let currentTotal = 0;
+        let loadedCount = 0;
+        const PAGE_SIZE = 24;
+
+        window.showPanel = function (name) {
+            document.getElementById('stockPanel').classList.toggle('active', name === 'stock');
+            document.getElementById('chatPanel').classList.toggle('active', name === 'chat');
+            document.getElementById('tabStockBtn').classList.toggle('active', name === 'stock');
+            document.getElementById('tabChatBtn').classList.toggle('active', name === 'chat');
+        };
+
+        async function loadBranding() {
+            try {
+                const b = await apiCall('getbranding');
+                if (b.error) { return; }
+                document.getElementById('storeName').textContent = b.store_name || 'Our Store';
+                document.documentElement.style.setProperty('--primary', b.primary_color || '#25214e');
+                document.documentElement.style.setProperty('--accent', b.accent_color || '#b8860b');
+
+                const taglineEl = document.getElementById('storeTagline');
+                if (b.tagline) { taglineEl.textContent = b.tagline; taglineEl.hidden = false; }
+
+                const logoEl = document.getElementById('storeLogo');
+                if (b.logo_url) { logoEl.src = b.logo_url; logoEl.hidden = false; }
+
+                if (b.welcome_message) {
+                    appendChatLine('Boudica', b.welcome_message);
+                }
+            } catch (err) {
+                console.error('Branding load failed:', err);
+            }
+        }
+
+        function renderProducts(products, append) {
+            const grid = document.getElementById('productGrid');
+            if (!append) { grid.innerHTML = ''; }
+            if (products.length === 0 && !append) {
+                grid.innerHTML = '<div class="empty-state">No products found.</div>';
+                return;
+            }
+            for (const p of products) {
+                const card = document.createElement('div');
+                card.className = 'product-card';
+
+                const title = document.createElement('h3');
+                title.textContent = p.description;
+                card.appendChild(title);
+
+                const meta = document.createElement('div');
+                meta.className = 'meta';
+                meta.textContent = [p.color, p.type].filter(Boolean).join(' · ');
+                card.appendChild(meta);
+
+                const price = document.createElement('div');
+                price.className = 'price';
+                price.textContent = '£' + Number(p.price).toFixed(2);
+                card.appendChild(price);
+
+                const badge = document.createElement('span');
+                badge.className = 'badge ' + p.availability;
+                badge.textContent = p.availability.replace('_', ' ');
+                card.appendChild(badge);
+
+                grid.appendChild(card);
+            }
+        }
+
+        function showAiNote(text) {
+            const note = document.getElementById('aiNote');
+            if (text) { note.textContent = 'Boudica: ' + text; note.hidden = false; }
+            else { note.hidden = true; }
+        }
+
+        async function searchCatalog(query, page, append) {
+            const grid = document.getElementById('productGrid');
+            showAiNote('');
+            try {
+                const params = { page: String(page), limit: String(PAGE_SIZE) };
+                if (query) { params.q = query; }
+                const data = await apiCall('getcatalog', params);
+                if (data.error) {
+                    grid.innerHTML = '<div class="error-state">Stock information is temporarily unavailable.</div>';
+                    document.getElementById('loadMoreRow').hidden = true;
+                    return;
+                }
+                currentTotal = data.total || 0;
+                loadedCount = append ? loadedCount + data.products.length : data.products.length;
+                renderProducts(data.products, append);
+                document.getElementById('loadMoreRow').hidden = loadedCount >= currentTotal;
+            } catch (err) {
+                grid.innerHTML = '<div class="error-state">Stock information is temporarily unavailable.</div>';
+                document.getElementById('loadMoreRow').hidden = true;
+            }
+        }
+
+        function loadMore() {
+            currentPage += 1;
+            searchCatalog(currentQuery, currentPage, true);
+        }
+
+        let searchDebounce;
+        document.getElementById('searchBox').addEventListener('input', (e) => {
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(() => {
+                currentQuery = e.target.value.trim();
+                currentPage = 1;
+                searchCatalog(currentQuery, 1, false);
+            }, 300);
+        });
+
+        document.getElementById('searchBox').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+        });
+
+        /**
+         * Explicit "help me find it" search — tries the fast catalog match first,
+         * then (server-side, smartsearch) falls back to asking Boudica to pick from
+         * real stock for a question no keyword search could ever answer. Not run on
+         * every keystroke like searchCatalog() above, since the AI fallback can take
+         * a few seconds.
+         */
+        async function runSearch() {
+            const query = document.getElementById('searchBox').value.trim();
+            if (!query) { return; }
+            clearTimeout(searchDebounce);
+            currentQuery = query;
+
+            const grid = document.getElementById('productGrid');
+            document.getElementById('loadMoreRow').hidden = true;
+            showAiNote('');
+            grid.innerHTML = '<div class="searching-state">Searching our stock...</div>';
+
+            try {
+                const data = await apiCall('smartsearch', { q: query });
+                if (data.error) {
+                    grid.innerHTML = '<div class="error-state">Search is temporarily unavailable.</div>';
+                    return;
+                }
+                if (!data.products || data.products.length === 0) {
+                    grid.innerHTML = '<div class="empty-state">No matches — try rephrasing, or ask in "Ask Boudica" instead.</div>';
+                    return;
+                }
+                if (data.mode === 'ai' && data.note) { showAiNote(data.note); }
+                renderProducts(data.products, false);
+            } catch (err) {
+                grid.innerHTML = '<div class="error-state">Search is temporarily unavailable.</div>';
+            }
+        }
+
+        document.getElementById('searchBtn').addEventListener('click', runSearch);
+        document.getElementById('loadMoreBtn').addEventListener('click', loadMore);
+
+        function appendChatLine(who, htmlText) {
+            const log = document.getElementById('chatLog');
+            const line = document.createElement('div');
+            line.className = 'chat-line';
+            const label = document.createElement('b');
+            label.textContent = who + ': ';
+            line.appendChild(label);
+            const body = document.createElement('span');
+            body.innerHTML = window.DOMPurify ? DOMPurify.sanitize(htmlText) : '';
+            line.appendChild(body);
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
+            return { line, body };
+        }
+
+        async function sendChat() {
+            const input = document.getElementById('chatInput');
+            const text = input.value.trim();
+            if (!text) return;
+            input.value = '';
+
+            appendChatLine('You', escapeHtml(text));
+            const { body } = appendChatLine('Boudica', '<i>Thinking...</i>');
+
+            // Resend prior chat text as context — call_boudica() always sets
+            // disable_memory:true (CODE_VERIFIED_AUDIT.md §12.7/§12.8), so the backend
+            // has no memory of its own; the storefront chat's own multi-turn fix
+            // (§12, findCatalogMatches trying all extracted keywords) already handles
+            // a long resent-history blob correctly.
+            const historyMessages = Array.from(document.getElementById('chatLog').querySelectorAll('.chat-line'))
+                .map(el => el.textContent.trim())
+                .join('\n');
+
+            try {
+                const response = await epos.AskBoudica(historyMessages);
+                body.innerHTML = window.DOMPurify ? DOMPurify.sanitize(response) : '';
+            } catch (err) {
+                body.textContent = 'Connection lost — please try again.';
+            }
+            document.getElementById('chatLog').scrollTop = document.getElementById('chatLog').scrollHeight;
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        document.getElementById('chatSubmit').addEventListener('click', sendChat);
+        document.getElementById('chatInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendChat();
+        });
+
+        loadBranding();
+        searchCatalog('', 1, false);
+    </script>
+</body>
+</html>

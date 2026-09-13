@@ -36,6 +36,7 @@
         <script defer src="scripts/reports.js"></script>
         <script defer src="scripts/order-history.js"></script>
         <script defer src="scripts/forecasting.js"></script>
+        <script defer src="scripts/branding.js"></script>
         <!-- Stripe Payment Processing -->
         <script src="https://js.stripe.com/v3/"></script>
         <script defer src="scripts/till-card-payment.js"></script>
@@ -113,6 +114,7 @@
             <button class="tab-button" onclick="openTab(event, 'tab7')">🏢 Suppliers</button>
             <button class="tab-button" onclick="openTab(event, 'tab9')">📋 EOD</button>
             <button class="tab-button" onclick="openTab(event, 'tab10')">✅ Stock Take</button>
+            <button class="tab-button" onclick="openTab(event, 'tab11')">🎨 Branding</button>
         </div>
 
         <div class="tab-pages">
@@ -444,8 +446,42 @@
                         <button type="button" class="tab-button call_action" id="set-stock_take_complete_btn" style="background-color: #3EDA95;">✅ Complete</button>
                         <button type="button" class="tab-button call_action" id="accept-all-discrepancies-btn" style="background-color: #f0ad4e; display: none;">✓ Accept All</button>
                     </div>
-                    <div id="stock_take_completion" class="results-list-container"></div> 
+                    <div id="stock_take_completion" class="results-list-container"></div>
                 </div>
+            </div>
+
+            <!-- TAB 11: Web Store Branding (admin only — setbranding is admin-gated server-side) -->
+            <div id="tab11" class="tab-content">
+                <div class="tab-heading top"><img src="assets/arrow_left.png" alt="Arrow left flash"/>WEB STORE BRANDING<img src="assets/arrow_right.png" alt="Arrow right flash"/></div>
+                <form class="supplier-form" id="branding-form">
+                    <div class="page-form-group">
+                        <label for="branding-store-name">Store Name</label>
+                        <input type="text" id="branding-store-name" name="store_name" required>
+                    </div>
+                    <div class="page-form-group">
+                        <label for="branding-tagline">Tagline</label>
+                        <input type="text" id="branding-tagline" name="tagline">
+                    </div>
+                    <div class="page-form-group">
+                        <label for="branding-primary-color">Primary Colour</label>
+                        <input type="color" id="branding-primary-color" name="primary_color">
+                    </div>
+                    <div class="page-form-group">
+                        <label for="branding-accent-color">Accent Colour</label>
+                        <input type="color" id="branding-accent-color" name="accent_color">
+                    </div>
+                    <div class="page-form-group">
+                        <label for="branding-logo-url">Logo URL</label>
+                        <input type="text" id="branding-logo-url" name="logo_url" placeholder="assets/logo.png">
+                    </div>
+                    <div class="page-form-group">
+                        <label for="branding-welcome-message">Kiosk Welcome Message</label>
+                        <textarea id="branding-welcome-message" name="welcome_message" rows="2"></textarea>
+                    </div>
+                    <div class="tab-header">
+                        <button type="submit" class="form-submit-btn call_action" style="background-color: #3EDA95;">💾 Save Branding</button>
+                    </div>
+                </form>
             </div>
 
             <!-- TAB FORECAST: Boudica AI Sales & Inventory Forecasting -->
